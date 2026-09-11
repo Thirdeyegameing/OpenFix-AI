@@ -1,7 +1,11 @@
 from datetime import datetime
 
+from openfix.models import Availability, DiagnosticResult
+
+
 def clamp(value, minimum=0, maximum=100):
     return max(minimum, min(maximum, value))
+
 
 def safe_int(value, default=0):
     try:
@@ -9,11 +13,13 @@ def safe_int(value, default=0):
     except Exception:
         return default
 
+
 def safe_float(value, default=None):
     try:
         return float(value)
     except Exception:
         return default
+
 
 def format_bytes(value):
     if value is None:
@@ -25,6 +31,7 @@ def format_bytes(value):
         return f"{value / (1024 ** 2):.0f} MB"
     except Exception:
         return "Not available"
+
 
 def format_uptime(seconds):
     if seconds is None:
@@ -41,6 +48,7 @@ def format_uptime(seconds):
         return f"{minutes}m"
     except Exception:
         return "Not available"
+
 
 def format_prioritized_actions(items, limit=7):
     if not items:
@@ -65,6 +73,7 @@ def format_prioritized_actions(items, limit=7):
         formatted.append(f"{prefix}: {text}")
     return formatted
 
+
 def make_result(
     title,
     score,
@@ -79,25 +88,37 @@ def make_result(
     healthy_areas=None,
     attention_areas=None,
     unavailable_areas=None,
+    availability=None,
     extra=None,
 ):
-    result = {
-        "title": title,
-        "score": clamp(int(score)),
-        "facts": facts or [],
-        "issues": issues or [],
-        "actions": actions or [],
-        "note": note,
-        "coverage": coverage,
-        "primary_issue": primary_issue,
-        "why_it_matters": why_it_matters,
-        "target_doctor": target_doctor,
-        "healthy_areas": healthy_areas,
-        "attention_areas": attention_areas,
-        "unavailable_areas": unavailable_areas,
-        "scan_time": datetime.now().strftime("%H:%M:%S"),
-    }
-    if extra:
-        result.update(extra)
-    return result
+    normalized_score = None if score is None else clamp(int(score))
 
+    if availability is None:
+        if coverage == 0 or normalized_score is None:
+            availability = Availability.UNAVAILABLE
+        elif coverage is not None and coverage < 100:
+            availability = Availability.PARTIAL
+        else:
+            availability = Availability.AVAILABLE
+    elif isinstance(availability, str):
+        availability = Availability(availability)
+
+    model = DiagnosticResult(
+        title=title,
+        score=normalized_score,
+        coverage=coverage,
+        facts=facts or [],
+        issues=issues or [],
+        actions=actions or [],
+        note=note,
+        primary_issue=primary_issue,
+        why_it_matters=why_it_matters,
+        target_doctor=target_doctor,
+        healthy_areas=healthy_areas,
+        attention_areas=attention_areas,
+        unavailable_areas=unavailable_areas,
+        scan_time=datetime.now().strftime("%H:%M:%S"),
+        availability=availability,
+        extra=extra or {},
+    )
+    return model.as_dict()

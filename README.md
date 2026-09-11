@@ -1,237 +1,129 @@
 # OpenFix AI
 
-OpenFix AI is an open-source Windows diagnostic and troubleshooting tool designed to help everyday users understand what may be happening inside their PC.
+OpenFix AI is an open-source Windows diagnostic and troubleshooting tool designed to help everyday users understand possible PC problems in clear language.
 
-The goal is simple:
+**Current development version: v0.5.2-dev12 — Reliability Gate**
 
-> Scan your PC, identify possible problems, explain the results clearly, and suggest safe next steps.
+OpenFix is local-first and read-only. Smart Doctor uses built-in local diagnostic rules; it does not use Cloud AI, OpenAI API, or external AI APIs.
 
-OpenFix AI is designed around a **local-first and privacy-focused approach**.
-
-- No Cloud AI
-- No external AI API
-- No automatic Registry changes
-- No automatic driver removal
-- No automatic Windows service changes
-
-Diagnostic analysis is performed locally on the user's PC.
-
----
-
-## v0.5.2 Development
-
-OpenFix AI v0.5.2 is currently focused on improving diagnostic accuracy, usability and the overall user experience.
-
-### Completed in v0.5.2 development
-
-- Modern sidebar-based interface
-- Redesigned system dashboard
-- System Health summary
-- CPU, RAM, storage, internet, GPU and Windows Event status cards
-- Local Smart Doctor improvements
-- Smarter issue correlation
-- Prioritized recommendations
-- Scan Coverage
-- Partial Scan detection
-- Last Scan time
-- Top RAM Usage
-- GPU driver information
-- Windows build information
-- PC uptime
-- Expandable System Information section
-- Expandable Top RAM Usage section
-- Modern Help, Simple Terms and Safety dialogs
-- Improved network diagnostics
-- Improved Event Log filtering
-- Improved multi-GPU handling
-- Reduced false-positive warnings
-- Improved scoring logic
-
-## Current Version
-
-**OpenFix AI v0.5.2-dev7**
-
-OpenFix AI is currently in active early development.
-
-The application focuses on **local, read-only Windows diagnostics** designed to help normal users understand possible PC problems without requiring advanced technical knowledge.
-
-Current highlights include:
+## Current Features
 
 - Modern system health dashboard
+- Full System Scan
 - Local Smart Doctor
-- Internet diagnostics
-- Gaming diagnostics
-- Slow PC diagnostics
-- Storage diagnostics
-- Windows Event Log analysis
-- CPU, RAM, GPU and network monitoring
-- System information
-- Top RAM usage monitoring
-- Scan coverage and partial scan detection
-- Prioritized recommendations
-- Expandable dashboard sections
-- Simple explanations for technical terms
-- Safety and privacy guidance
-
-OpenFix AI does **not** use Cloud AI or external AI APIs.
-
-Diagnostic analysis is performed locally using built-in rules.
-
-OpenFix AI currently operates in **read-only diagnostic mode** and does not automatically modify Windows settings, drivers, Registry entries or services.
-
----
-
-## Features
-
-OpenFix AI v0.5.2-dev7 currently includes:
-
-### Core Diagnostics
-- CPU usage monitoring
-- RAM usage monitoring
-- GPU information
-- GPU driver version detection
-- GPU temperature support on compatible systems
-- Storage usage for multiple drives
-- Windows drive free space checks
-- Active network adapter detection
-- Ethernet / Wi-Fi link information
-- Default gateway detection
-- DNS detection
-- Internet connectivity check
-- Ping / response time check
-- Packet loss check
-- Windows Event Log diagnostics
-
-### Doctor Modes
 - Internet Doctor
 - Gaming Doctor
 - Slow PC Doctor
 - Storage Doctor
 - Windows Event Doctor
-- Full System Scan
+- CPU and RAM usage checks
+- GPU information, driver detection, and temperature where supported
+- Active network adapter, gateway, DNS, connectivity, ping, and packet-loss checks
+- Multi-drive storage checks with adaptive thresholds
+- Windows Event Log filtering and classification
+- Top RAM application grouping
+- Scan coverage and unavailable-data handling
+- Primary issue and prioritized recommendations
+- Local rotating diagnostic logs
 
-### Smart Analysis
-- Local Smart Doctor analysis
-- Measured facts display
-- Estimated analysis
-- Possible problem detection
-- Prioritized recommendations
-- Scan coverage summary
-- Partial scan awareness
-- Last scan tracking
+## Reliability Principles
 
-### Dashboard and Monitoring
-- System Health dashboard
-- CPU status card
-- RAM status card
-- Internet status card
-- Graphics status card
-- Windows drive status card
-- Windows event status card
-- Top RAM usage monitoring
-- System information panel
-- PC uptime display
-- Installed RAM display
-- Windows version display
-- Network adapter display
+- Missing information is **not** counted as healthy.
+- If there is not enough data to calculate a score, OpenFix shows **N/A / UNAVAILABLE** instead of 100/100.
+- Internet connectivity and ICMP ping are separate checks.
+- A blocked ping does not automatically mean the internet is offline.
+- Windows Event Log noise is filtered before important events are prioritized.
+- Scores are estimates and are not hardware failure verdicts.
 
-### Usability
-- Expandable / collapsible dashboard sections
-- Quick Guide window
-- Simple Terms window
-- Safety & Privacy window
-- Cleaner modern UI
-- Read-only diagnostic mode
+## Safety & Privacy
 
-### Safety
 - No Cloud AI
-- No external API integration
-- No automatic Registry edits
+- No OpenAI API
+- No external AI API
+- No automatic Registry changes
 - No automatic driver removal
 - No automatic Windows service changes
-- No automatic system changes
+- Read-only diagnostics
 
----
-
-## Screenshot
-
-OpenFix AI currently uses a simple dashboard designed to make system information easier to understand.
-
-A screenshot will be added here soon.
-
----
-
-## Planned Features
-
-Future development will focus on:
-
-- UI polish and usability improvements
-- Better Smart Doctor explanations
-- Better dashboard organization
-- Diagnostic report export
-- Safe repair tools with confirmation prompts
-- More stable scoring and diagnostics
-- First stable Windows release
-
----
+Internet Doctor performs normal connectivity tests such as DNS, TCP connection checks, and ping. These are standard network diagnostics, not AI services.
 
 ## Requirements
 
-OpenFix AI currently requires:
-
-- Windows
-- Python 3
+- Windows 10 or Windows 11
+- Python **3.10+**
 - PySide6
 - psutil
+- PowerShell / Windows CIM access for Windows-specific diagnostics
 
-Install dependencies with:
-
-```bash
-pip install PySide6 psutil
-```
-If the pip command does not work, try:
+Install dependencies:
 
 ```bash
-py -m pip install PySide6 psutil
+python -m pip install -r requirements.txt
 ```
 
-## Running OpenFix AI
-Download or clone this repository.
-
-Then run:
+Run OpenFix:
 
 ```bash
 python main.py
 ```
-or:
+
+## Development Tests
+
+Install development requirements:
 
 ```bash
-py main.py
+python -m pip install -r requirements-dev.txt
 ```
 
-Then click:
+Run the regression suite:
 
-> SCAN MY PC
+```bash
+pytest -q
+```
 
-OpenFix AI will scan your system and display the results.
+GitHub Actions also runs the test suite on Windows across Python 3.10–3.13.
 
-## Project Roadmap
+## Project Structure
 
-- [x] v0.1 - Basic CPU, RAM, disk and internet diagnostics
-- [x] v0.2 - GPU, network details, multiple drives, process monitoring and issue detection
-- [x] v0.3 - Doctor Mode
-- [x] v0.4 - Windows Event Log diagnostics
-- [x] v0.5 - Local Smart Doctor and diagnostic analysis
-- [ ] v0.6 - Diagnostic report export
-- [ ] v0.7 - Safe repair tools
-- [ ] v1.0 - First stable Windows release
+```text
+OpenFix-AI/
+├─ main.py
+├─ openfix/
+│  ├─ core/
+│  ├─ diagnostics/
+│  ├─ doctors/
+│  └─ ui/
+├─ tests/
+├─ .github/workflows/
+├─ requirements.txt
+├─ requirements-dev.txt
+├─ DEVELOPMENT.md
+└─ README.md
+```
+
+## Roadmap
+
+- [x] v0.1 — Basic CPU, RAM, disk and internet diagnostics
+- [x] v0.2 — GPU, network, multiple drives and process diagnostics
+- [x] v0.3 — Doctor Mode
+- [x] v0.4 — Windows Event diagnostics
+- [x] v0.5 — Local Smart Doctor and modern diagnostic dashboard
+- [x] v0.5.2-dev12 — Reliability Gate and production diagnostic foundation
+- [ ] v0.5.2-dev13 — Accuracy Expansion
+- [ ] v0.6 — Diagnostic report export
+- [ ] v0.7 — Carefully designed safe repair tools
+- [ ] v1.0 — First stable Windows release
+
+## Planned Accuracy Expansion
+
+Future development may include:
+
+- Physical SSD/HDD health information
+- Event timeline correlation
+- Scan history and comparison
+- More detailed hardware availability checks
+- Improved diagnostic context without sending data to Cloud AI
 
 ## License
-OpenFix AI is licensed under the MIT License.
-See the LICENSE file for more information.
 
-## Author
-
-Created by **Thirdeyegameing**
-
-OpenFix AI is currently under active development.
+OpenFix AI is released under the MIT License. See `LICENSE` in the repository.

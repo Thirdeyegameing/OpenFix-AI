@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 from PySide6.QtWidgets import QApplication
 
 from openfix.config import APP_NAME, APP_VERSION
@@ -8,7 +7,7 @@ from openfix.ui.main_window import OpenFixWindow
 
 
 def run_app() -> int:
-    logger = setup_logging(Path.cwd())
+    logger = setup_logging()
     logger.info("app_start name=%s version=%s", APP_NAME, APP_VERSION)
     app = QApplication(sys.argv)
     window = OpenFixWindow()

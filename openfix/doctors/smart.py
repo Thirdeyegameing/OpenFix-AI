@@ -1,11 +1,28 @@
+from openfix import config
 from openfix.core.helpers import clamp, format_bytes, format_prioritized_actions, make_result
+from openfix.core.scoring import disk_space_state
 from openfix.diagnostics.collector import smart_coverage
+from openfix.diagnostics.system import group_process_memory
+
 
 def doctor_smart(data, event_analysis):
+    coverage = smart_coverage(data, event_analysis)
+    if coverage <= 0:
+        return make_result(
+            "Local Smart Doctor",
+            None,
+            ["Smart analysis could not collect enough diagnostic data."],
+            [],
+            ["Run a Full System Scan again. If it repeats, check OpenFix logs."],
+            "No Smart Doctor score was produced because the diagnostic inputs were unavailable.",
+            coverage=0,
+        )
+
     facts, issues, recommended = [], [], []
     candidates = []
 
-    # Each diagnostic family uses its strongest penalty only, reducing double punishment.
+    # Strongest penalty per diagnostic family only. This avoids punishing one
+    # underlying problem multiple times when signals correlate.
     penalty_groups = {
         "resources": 0,
         "storage": 0,
@@ -25,139 +42,211 @@ def doctor_smart(data, event_analysis):
     def candidate(priority, issue, why, doctor):
         candidates.append((priority, issue, why, doctor))
 
-    cpu = data["cpu"]
-    memory = data["memory"]
-    ram = memory["percent"]
-    gpu = data["gpu"]
-    network = data["network"]
+    cpu = data.get("cpu")
+    memory = data.get("memory", {})
+    ram = memory.get("percent")
+    gpu = data.get("gpu", {})
+    network = data.get("network", {})
 
     if cpu is not None:
         facts.append(f"CPU usage: {cpu:.0f}%.")
-        if cpu >= 95:
+        if cpu >= config.CPU_CRITICAL:
             set_penalty("resources", 20)
             issues.append("CPU usage is extremely high.")
             action(2, "Check which application is using the most CPU.")
-            candidate(3, "CPU usage is extremely high.", "Very high CPU load can make Windows and applications feel slow and can contribute to game stuttering.", "slow")
-        elif cpu >= 85:
+            candidate(
+                3,
+                "CPU usage is extremely high.",
+                "Very high CPU load can make Windows and applications feel slow and can contribute to game stuttering.",
+                "slow",
+            )
+        elif cpu >= config.CPU_HIGH:
             set_penalty("resources", 10)
             issues.append("CPU usage is high.")
 
     if ram is not None:
         facts.append(f"RAM usage: {ram:.0f}%.")
-        if ram >= 95:
+        if ram >= config.RAM_CRITICAL:
             set_penalty("resources", 25)
             issues.append("RAM usage is extremely high.")
-            candidate(2, "RAM usage is extremely high.", "When RAM is almost full, Windows can rely more heavily on slower virtual memory.", "slow")
-        elif ram >= 85:
+            candidate(
+                2,
+                "RAM usage is extremely high.",
+                "When RAM is almost full, Windows can rely more heavily on slower virtual memory.",
+                "slow",
+            )
+        elif ram >= config.RAM_HIGH:
             set_penalty("resources", 12)
             issues.append("RAM usage is high.")
 
-    if data["processes"] and memory["total"]:
-        top = data["processes"][0]
+    grouped = group_process_memory(data.get("processes", []), limit=5)
+    if grouped and memory.get("total"):
+        top = grouped[0]
         percent = top["memory"] / memory["total"] * 100
-        facts.append(f"Highest RAM usage: {top['name']} — {format_bytes(top['memory'])} ({percent:.1f}% of installed RAM).")
-        if ram is not None and ram >= 85 and percent >= 15:
+        suffix = f" across {top['count']} processes" if top["count"] > 1 else ""
+        facts.append(
+            f"Highest RAM application: {top['name']} — {format_bytes(top['memory'])} ({percent:.1f}% of usable RAM{suffix})."
+        )
+        if ram is not None and ram >= config.RAM_HIGH and percent >= 15:
             action(0, f"Check {top['name']} first because it is using a large share of RAM.")
 
     low_storage = False
     critical_storage = False
-    for drive in data["disks"]:
-        free_gb = drive["free"] / (1024 ** 3)
-        free_percent = 100 - drive["percent"]
-        if free_gb < 5 or free_percent < 3:
+    for drive in data.get("disks", []):
+        state, free_gb, free_percent = disk_space_state(drive)
+        if state == "ignored":
+            continue
+        if state == "critical":
             low_storage = True
             critical_storage = True
             set_penalty("storage", 25)
             issues.append(f"{drive['device']} is critically low on free space.")
-            candidate(2, f"{drive['device']} is critically low on free space.", "Critically low free space can interfere with Windows updates, temporary files and application performance.", "storage")
-        elif free_gb < 15 or free_percent < 8:
+            candidate(
+                2,
+                f"{drive['device']} is critically low on free space.",
+                "Critically low free space can interfere with Windows updates, temporary files and application performance.",
+                "storage",
+            )
+        elif state == "low":
             low_storage = True
             set_penalty("storage", 10)
             issues.append(f"{drive['device']} is getting low on free space.")
 
-    # Internet offline is explicitly handled again in dev9.
-    if network["ping_tested"] and network["internet"] is False:
+    online = network.get("online")
+    if network.get("connectivity_tested") and online is False:
         set_penalty("network", 30)
-        issues.append("OpenFix could not reach the internet.")
+        issues.append("External internet connectivity could not be confirmed.")
         action(1, "Check the router, Wi-Fi connection or Ethernet cable.")
-        candidate(1, "Internet connection could not be confirmed.", "A disconnected network can affect online games, websites, updates and communication apps.", "internet")
+        candidate(
+            1,
+            "Internet connectivity could not be confirmed.",
+            "A disconnected network can affect online games, websites, updates and communication apps.",
+            "internet",
+        )
 
-    ping = network["ping"]
-    loss = network["packet_loss"]
+    ping = network.get("ping")
+    loss = network.get("packet_loss")
     if ping is not None:
         facts.append(f"Internet response time: {ping} ms.")
-    if loss is not None:
+    if network.get("icmp_reachable") is True and loss is not None:
         facts.append(f"Packet loss: {loss}%.")
 
-    if loss is not None and loss >= 3 and ping is not None and ping < 80:
-        set_penalty("network", 18)
-        issues.append("Internet response speed is good, but the connection appears unstable.")
-        action(1, "Check Wi-Fi signal, Ethernet cable and router stability.")
-        candidate(2, "The network connection appears unstable.", "Packet loss can cause game lag, voice cut-outs and connection problems even when ping looks good.", "internet")
-    elif loss is not None and loss >= 3:
-        set_penalty("network", 18)
-        issues.append("Packet loss may be causing an unstable internet connection.")
-        candidate(2, "Packet loss was detected.", "Packet loss directly affects connection stability and can be more noticeable than raw download speed.", "internet")
-    elif ping is not None and ping >= 150:
-        set_penalty("network", 15)
-        issues.append("Internet response time is very high.")
+    if network.get("icmp_reachable") is True:
+        if loss is not None and loss >= config.PACKET_LOSS_WARN and ping is not None and ping < config.PING_GOOD_MS:
+            set_penalty("network", 18)
+            issues.append("Internet response speed is good, but the connection appears unstable.")
+            action(1, "Check Wi-Fi signal, Ethernet cable and router stability.")
+            candidate(
+                2,
+                "The network connection appears unstable.",
+                "Packet loss can cause game lag, voice cut-outs and connection problems even when ping looks good.",
+                "internet",
+            )
+        elif loss is not None and loss >= config.PACKET_LOSS_WARN:
+            set_penalty("network", 18)
+            issues.append("Packet loss may be causing an unstable internet connection.")
+            candidate(
+                2,
+                "Packet loss was detected.",
+                "Packet loss directly affects connection stability and can be more noticeable than raw download speed.",
+                "internet",
+            )
+        elif ping is not None and ping >= config.PING_HIGH_MS:
+            set_penalty("network", 15)
+            issues.append("Internet response time is very high.")
+    elif network.get("ping_tested") and online is True:
+        facts.append("ICMP ping is unavailable, but other connectivity checks confirm internet access.")
 
     hot_gpu = False
-    if gpu["temperature"] is not None:
+    if gpu.get("temperature") is not None:
         temperature = gpu["temperature"]
         facts.append(f"GPU temperature: {temperature:.0f}°C.")
-        if temperature >= 90:
+        if temperature >= config.GPU_HOT_C:
             hot_gpu = True
             set_penalty("graphics", 25)
             issues.append("GPU temperature is dangerously high.")
             action(0, "Check GPU cooling, fans and case airflow.")
-            candidate(1, "GPU temperature is dangerously high.", "Excessive GPU temperature can cause throttling, crashes and reduced gaming performance.", "gaming")
-        elif temperature >= 83:
+            candidate(
+                1,
+                "GPU temperature is dangerously high.",
+                "Excessive GPU temperature can cause throttling, crashes and reduced gaming performance.",
+                "gaming",
+            )
+        elif temperature >= config.GPU_WARM_C:
             hot_gpu = True
             set_penalty("graphics", 10)
             issues.append("GPU temperature is higher than ideal.")
+    elif gpu.get("available"):
+        facts.append("GPU detected, but temperature sensor data is unavailable.")
 
-    storage_event = event_analysis["storage_errors"] > 0
-    gpu_event = event_analysis["gpu_errors"] > 0
+    storage_event = event_analysis.get("storage_errors", 0) > 0
+    gpu_event = event_analysis.get("gpu_errors", 0) > 0
 
-    if event_analysis["hardware_errors"]:
+    if event_analysis.get("hardware_errors"):
         set_penalty("hardware", 30)
         issues.append("Windows recorded possible hardware errors.")
         action(0, "Run dedicated hardware diagnostics before changing Windows settings.")
-        candidate(0, "Windows recorded possible hardware errors.", "Hardware-level errors have higher priority because they may indicate system instability below the software level.", "events")
+        candidate(
+            0,
+            "Windows recorded possible hardware errors.",
+            "Hardware-level errors have higher priority because they may indicate system instability below the software level.",
+            "events",
+        )
+
+    if event_analysis.get("hardware_warnings"):
+        facts.append(f"Windows recorded {event_analysis['hardware_warnings']} corrected hardware warning(s).")
 
     if storage_event:
-        # Correlate with low space instead of stacking two separate storage penalties.
         set_penalty("storage", 35 if low_storage else 25)
         issues.append("Windows recorded important storage-related errors.")
         if low_storage:
             action(0, "Back up important files first because storage errors and low free space were detected together.")
-            candidate(0, "Storage errors and low free space were detected together.", "The combination deserves priority because storage problems can affect both data reliability and Windows stability.", "storage")
+            candidate(
+                0,
+                "Storage errors and low free space were detected together.",
+                "The combination deserves priority because storage problems can affect both data reliability and Windows stability.",
+                "storage",
+            )
         else:
             action(0, "Back up important files and check drive health.")
-            candidate(0, "Windows recorded storage-related errors.", "Storage errors can affect file reliability and should be checked before less important performance issues.", "events")
+            candidate(
+                0,
+                "Windows recorded storage-related errors.",
+                "Storage errors can affect file reliability and should be checked before less important performance issues.",
+                "events",
+            )
 
-    if event_analysis["shutdown_errors"]:
+    if event_analysis.get("shutdown_errors"):
         set_penalty("shutdown", 20)
         issues.append("Unexpected shutdowns were recorded.")
         action(1, "Check temperatures, power stability and recent crash history.")
-        candidate(1, "Unexpected shutdowns were recorded.", "Unexpected shutdowns may indicate crashes, temperature problems or power instability.", "events")
+        candidate(
+            1,
+            "Unexpected shutdowns were recorded.",
+            "Unexpected shutdowns may indicate crashes, temperature problems or power instability.",
+            "events",
+        )
 
     if gpu_event:
         set_penalty("graphics", 35 if hot_gpu else 15)
         issues.append("Windows recorded graphics-related errors.")
         if hot_gpu:
             action(0, "Check GPU cooling first because graphics errors and high temperature were detected together.")
-            candidate(0, "GPU errors and high GPU temperature were detected together.", "Cooling should be checked before assuming the problem is only a graphics driver.", "gaming")
+            candidate(
+                0,
+                "GPU errors and high GPU temperature were detected together.",
+                "Cooling should be checked before assuming the problem is only a graphics driver.",
+                "gaming",
+            )
         else:
             action(2, "Check graphics driver stability.")
 
-    if event_analysis["app_crashes"]:
+    if event_analysis.get("app_crashes"):
         set_penalty("apps", 8)
         issues.append("Application crashes were recorded.")
         action(4, "Identify which application crashed before reinstalling drivers or Windows.")
 
-    if low_storage and cpu is not None and cpu < 70 and ram is not None and ram < 80:
+    if low_storage and cpu is not None and cpu < config.RESOURCE_NORMAL_CPU_MAX and ram is not None and ram < config.RESOURCE_NORMAL_RAM_MAX:
         action(2, "Storage space is currently a more likely concern than CPU or RAM usage.")
     if critical_storage and not storage_event:
         action(1, "Free space on the nearly-full drive.")
@@ -179,7 +268,7 @@ def doctor_smart(data, event_analysis):
         issues,
         actions,
         "Smart Doctor uses built-in local diagnostic rules. No Cloud AI or external AI API is used.",
-        coverage=smart_coverage(data, event_analysis),
+        coverage=coverage,
         primary_issue=primary_issue,
         why_it_matters=why_it_matters,
         target_doctor=target_doctor,

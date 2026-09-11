@@ -4,8 +4,13 @@ from PySide6.QtWidgets import (
     QPushButton, QFrame, QProgressBar, QScrollArea, QStackedWidget,
 )
 
-from openfix.config import APP_VERSION
+from openfix.config import (
+    APP_VERSION, CPU_HIGH, CPU_CRITICAL, RAM_HIGH, RAM_CRITICAL,
+    GPU_WARM_C, GPU_HOT_C, PACKET_LOSS_WARN, PING_HIGH_MS,
+)
 from openfix.core.helpers import format_bytes
+from openfix.core.scoring import disk_space_state
+from openfix.diagnostics.system import group_process_memory
 from openfix.core.scanner import ScanWorker
 from openfix.ui.theme import STYLESHEET
 from openfix.ui.widgets import (
@@ -228,7 +233,7 @@ class OpenFixWindow(QMainWindow):
         root.addWidget(
             PageHeader(
                 "System Dashboard",
-                "A live local overview of performance, connectivity, graphics and Windows reliability.",
+                "Latest local snapshot of performance, connectivity, graphics and Windows reliability.",
             )
         )
 
@@ -287,7 +292,7 @@ class OpenFixWindow(QMainWindow):
         self.dashboard_progress.hide()
         root.addWidget(self.dashboard_progress)
 
-        section_title = QLabel("LIVE SYSTEM SIGNALS")
+        section_title = QLabel("SYSTEM SNAPSHOT")
         section_title.setObjectName("DashboardSectionTitle")
         root.addWidget(section_title)
 
@@ -320,7 +325,7 @@ class OpenFixWindow(QMainWindow):
         info_grid = QGridLayout()
         info_grid.setSpacing(12)
         self.cpu_model_card = InfoValueCard("Processor")
-        self.total_ram_card = InfoValueCard("Installed RAM")
+        self.total_ram_card = InfoValueCard("Memory")
         self.windows_card = InfoValueCard("Windows")
         self.gpu_info_card = InfoValueCard("Graphics Device")
         self.gpu_driver_card = InfoValueCard("Graphics Driver")
@@ -338,7 +343,7 @@ class OpenFixWindow(QMainWindow):
 
         self.process_section = CollapsibleSection(
             "Top RAM Usage",
-            "Applications currently using the largest share of installed memory",
+            "Applications currently using the largest share of usable memory",
             expanded=False,
         )
         self.process_card = SectionCard("Applications using the most RAM")
@@ -459,15 +464,32 @@ class OpenFixWindow(QMainWindow):
             self.full_scan_btn.setText("Scanning...")
 
         self.worker = ScanWorker(mode)
-        self.worker.finished.connect(self.scan_complete)
+        self.worker.result_ready.connect(self.scan_complete)
+        self.worker.finished.connect(self.scan_thread_finished)
         self.worker.start()
 
-    def scan_complete(self, result):
-        if self.active_progress:
-            self.active_progress.hide()
-        self.enable_scan_buttons(True)
-        self.full_scan_btn.setText("Run Full Scan")
+    def scan_thread_finished(self):
+        worker = self.sender()
+        if worker is self.worker:
+            self.worker = None
+            if self.active_progress:
+                self.active_progress.hide()
+            self.enable_scan_buttons(True)
+            self.full_scan_btn.setText("Run Full Scan")
+        if worker is not None:
+            worker.deleteLater()
 
+    def closeEvent(self, event):
+        if self.worker is not None and self.worker.isRunning():
+            event.ignore()
+            self.show_small_message(
+                "Scan still running",
+                "Please wait for the current diagnostic scan to finish before closing OpenFix. This prevents the scan thread from being destroyed while Windows checks are still running.",
+            )
+            return
+        event.accept()
+
+    def scan_complete(self, result):
         if self.active_result:
             self.active_result.set_result(result)
 
@@ -481,9 +503,9 @@ class OpenFixWindow(QMainWindow):
         cpu = data["cpu"]
         if cpu is None:
             self.cpu_card.set_status("N/A", "CPU usage could not be read", "UNAVAILABLE", "unavailable", None)
-        elif cpu < 80:
+        elif cpu < CPU_HIGH:
             self.cpu_card.set_status(f"{cpu:.0f}%", "Normal usage", "GOOD", "good", cpu)
-        elif cpu < 90:
+        elif cpu < CPU_CRITICAL:
             self.cpu_card.set_status(f"{cpu:.0f}%", "Higher than normal", "CHECK", "minor", cpu)
         else:
             self.cpu_card.set_status(f"{cpu:.0f}%", "Very high usage", "HIGH", "danger", cpu)
@@ -492,9 +514,9 @@ class OpenFixWindow(QMainWindow):
         ram = memory["percent"]
         if ram is None:
             self.ram_card.set_status("N/A", "RAM usage unavailable", "UNAVAILABLE", "unavailable", None)
-        elif ram < 80:
+        elif ram < RAM_HIGH:
             self.ram_card.set_status(f"{ram:.0f}%", "Normal usage", "GOOD", "good", ram)
-        elif ram < 90:
+        elif ram < RAM_CRITICAL:
             self.ram_card.set_status(f"{ram:.0f}%", "High usage", "CHECK", "minor", ram)
         else:
             self.ram_card.set_status(f"{ram:.0f}%", "Very high usage", "HIGH", "danger", ram)
@@ -503,33 +525,38 @@ class OpenFixWindow(QMainWindow):
         if not drive:
             self.storage_card.set_status("N/A", "Drive information unavailable", "UNAVAILABLE", "unavailable", None)
         else:
-            free_gb = drive["free"] / (1024 ** 3)
-            free_percent = 100 - drive["percent"]
+            disk_state, free_gb, free_percent = disk_space_state(drive)
             subtitle = f"{drive['device']} free space • {free_percent:.0f}% free"
-            if free_gb < 5 or free_percent < 3:
+            if disk_state == "critical":
                 badge, state = "LOW", "danger"
-            elif free_gb < 15 or free_percent < 8:
+            elif disk_state == "low":
                 badge, state = "CHECK", "minor"
             else:
                 badge, state = "GOOD", "good"
             self.storage_card.set_status(f"{free_gb:.0f} GB", subtitle, badge, state, free_percent)
 
         network = data["network"]
-        if network["ping_tested"] and network["internet"] is False:
-            self.network_card.set_status("Offline", "Internet connection not confirmed", "CHECK", "danger", 0)
-        elif not network["ping_tested"]:
-            self.network_card.set_status("N/A", "Internet test unavailable", "UNAVAILABLE", "unavailable", None)
+        online = network.get("online")
+        if network.get("connectivity_tested") and online is False:
+            self.network_card.set_status("Offline", "External connectivity not confirmed", "CHECK", "danger", 0)
+        elif not network.get("connectivity_tested"):
+            self.network_card.set_status("N/A", "Connectivity test unavailable", "UNAVAILABLE", "unavailable", None)
         else:
-            ping = network["ping"]
-            loss = network["packet_loss"]
-            value = f"{ping} ms" if ping is not None else "Online"
-            if loss is not None and loss >= 3:
+            ping = network.get("ping")
+            loss = network.get("packet_loss")
+            icmp = network.get("icmp_reachable")
+            value = f"{ping} ms" if ping is not None else ("Online" if online is True else "Unknown")
+            if icmp is True and loss is not None and loss >= PACKET_LOSS_WARN:
                 self.network_card.set_status(value, f"{loss}% packet loss", "UNSTABLE", "warning", max(0, 100 - (loss * 10)))
-            elif ping is not None and ping >= 150:
+            elif ping is not None and ping >= PING_HIGH_MS:
                 self.network_card.set_status(value, "High response delay", "HIGH", "warning", max(0, 100 - min(100, ping / 2)))
-            else:
-                subtitle = f"{loss}% packet loss" if loss is not None else "Connection reachable"
+            elif online is True and network.get("ping_tested") and icmp is False:
+                self.network_card.set_status("Online", "Ping blocked or unavailable", "PING N/A", "neutral", 100)
+            elif online is True:
+                subtitle = f"{loss}% packet loss" if icmp is True and loss is not None else "External connectivity confirmed"
                 self.network_card.set_status(value, subtitle, "GOOD", "good", 100 if loss in (None, 0) else max(0, 100 - (loss * 10)))
+            else:
+                self.network_card.set_status(value, "Connectivity result inconclusive", "CHECK", "minor", None)
 
         gpu = data["gpu"]
         if not gpu["available"]:
@@ -540,10 +567,10 @@ class OpenFixWindow(QMainWindow):
                 name = name[:27] + "..."
             temperature = gpu["temperature"]
             if temperature is None:
-                self.gpu_card.set_status(name, "Temperature sensor not available", "TEMP N/A", "unavailable", None)
-            elif temperature >= 90:
+                self.gpu_card.set_status(name, "GPU detected • temperature sensor unavailable", "TEMP N/A", "neutral", None)
+            elif temperature >= GPU_HOT_C:
                 self.gpu_card.set_status(name, f"{temperature:.0f}°C", "HOT", "danger", min(100, temperature))
-            elif temperature >= 83:
+            elif temperature >= GPU_WARM_C:
                 self.gpu_card.set_status(name, f"{temperature:.0f}°C", "CHECK", "warning", min(100, temperature))
             else:
                 self.gpu_card.set_status(name, f"{temperature:.0f}°C", "GOOD", "good", min(100, temperature))
@@ -562,7 +589,10 @@ class OpenFixWindow(QMainWindow):
             self.events_card.set_status(str(serious), "Important event(s) detected", "CHECK", "warning", max(0, 100 - min(100, serious * 20)))
 
         self.cpu_model_card.set_value(data["cpu_model"])
-        self.total_ram_card.set_value(format_bytes(memory["total"]))
+        self.total_ram_card.set_value(
+            f"Installed {format_bytes(data.get('installed_ram'))} • Usable {format_bytes(memory['total'])}"
+            if data.get("installed_ram") else f"Usable {format_bytes(memory['total'])}"
+        )
         windows = data["windows"]
         self.windows_card.set_value(f"{windows['caption']} • Build {windows['build']}")
         self.gpu_info_card.set_value(gpu["name"] if gpu["available"] else "Not available")
@@ -579,10 +609,11 @@ class OpenFixWindow(QMainWindow):
 
         lines = []
         total_ram = memory["total"] or 0
-        for index, process in enumerate(data["processes"][:3], start=1):
+        for index, process in enumerate(group_process_memory(data["processes"], limit=3), start=1):
             percent = process["memory"] / total_ram * 100 if total_ram > 0 else 0
+            suffix = f" • {process['count']} processes" if process["count"] > 1 else ""
             lines.append(
-                f"{index}. {process['name']} — {format_bytes(process['memory'])} ({percent:.1f}% of installed RAM)"
+                f"{index}. {process['name']} — {format_bytes(process['memory'])} ({percent:.1f}% of usable RAM){suffix}"
             )
         self.process_card.set_lines(lines, "Process information is not available.")
 

@@ -1,0 +1,26 @@
+OpenFix AI v0.5.2-dev12 upgrade from dev11
+============================================
+
+1. Keep your existing GitHub repository folder. Do NOT delete the .git folder.
+2. Extract OpenFix_AI_v0.5.2-dev12.zip.
+3. Copy ALL files and folders from the extracted dev12 folder into your existing OpenFix-AI repository folder.
+4. When Windows asks, choose Replace files in the destination.
+5. Keep your existing LICENSE file if Windows does not show one in this package.
+6. Open Command Prompt in the repository folder.
+7. Run:
+
+   py -m pip install -r requirements.txt
+   py main.py
+
+Optional developer test:
+
+   py -m pip install -r requirements-dev.txt
+   py -m pytest -q
+
+Expected regression test result for this development package: 34 passed.
+
+Important:
+- Do not delete .git
+- No Cloud AI is added
+- No external AI API is added
+- OpenFix remains read-only

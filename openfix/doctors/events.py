@@ -1,17 +1,18 @@
 from openfix.core.helpers import make_result
 from openfix.diagnostics.events import analyze_event_logs
 
+
 def create_event_result(package):
     analysis = analyze_event_logs(package)
 
     if not analysis["available"]:
         return make_result(
             "Windows Event Doctor",
-            100,
+            None,
+            ["Windows Event data could not be read."],
             [],
-            [],
-            [],
-            "Windows Event data could not be read. The score was not reduced because missing data is not a fault.",
+            ["Run the scan again. If it repeats, check OpenFix logs."],
+            "No health score was produced because Event Log data was unavailable. Missing data is not treated as a fault.",
             coverage=0,
             extra={"event_analysis": analysis},
         )
@@ -19,23 +20,25 @@ def create_event_result(package):
     score = 100
     facts = [
         f"Windows events checked: {analysis['total']}.",
-        f"Errors recorded: {analysis['errors']}.",
-        f"Warnings recorded: {analysis['warnings']}.",
+        f"Relevant events: {analysis['relevant_events']}.",
+        f"Ignored background events: {analysis['ignored_noise']}.",
     ]
     issues, actions = [], []
     primary = None
     why = None
 
-    if analysis["ignored_noise"]:
-        facts.append(f"Common background events ignored: {analysis['ignored_noise']}.")
-
     if analysis["hardware_errors"]:
         count = analysis["hardware_errors"]
         score -= min(45, count * 25)
-        issues.append(f"{count} possible hardware error event(s) were recorded.")
+        issues.append(f"{count} serious hardware-related event(s) were recorded.")
         actions.append("Use dedicated hardware diagnostics before changing Windows settings.")
         primary = "Windows recorded possible hardware errors."
-        why = "Hardware-level errors deserve higher priority because they may indicate instability below the application level."
+        why = "Serious hardware-level errors deserve higher priority because they may indicate instability below the application level."
+
+    if analysis["hardware_warnings"]:
+        count = analysis["hardware_warnings"]
+        score -= min(8, count * 2)
+        facts.append(f"Corrected hardware warning(s): {count}.")
 
     if analysis["storage_errors"]:
         count = analysis["storage_errors"]
@@ -72,12 +75,15 @@ def create_event_result(package):
 
     if analysis["generic_errors"]:
         score -= min(5, analysis["generic_errors"])
-        facts.append(f"Other Windows errors: {analysis['generic_errors']}.")
+        facts.append(f"Other relevant Windows errors: {analysis['generic_errors']}.")
 
     if analysis["important"]:
         facts.append("Important recent events:")
         for event in analysis["important"][:5]:
-            facts.append(f"[{event['category']}] {event['provider']} (Event ID {event['id']})")
+            timestamp = event.get("time_created") or "time unavailable"
+            facts.append(
+                f"[{event['category']}] {event['provider']} (Event ID {event['id']}, {timestamp})"
+            )
 
     return make_result(
         "Windows Event Doctor",
@@ -85,7 +91,7 @@ def create_event_result(package):
         facts,
         issues,
         actions,
-        "Windows can contain harmless warnings and errors even when the PC is working normally.",
+        "Windows can contain harmless warnings and errors even when the PC is working normally. OpenFix emphasizes relevant events instead of raw error counts.",
         coverage=100,
         primary_issue=primary,
         why_it_matters=why,

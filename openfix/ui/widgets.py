@@ -5,6 +5,8 @@ from PySide6.QtWidgets import (
     QScrollArea, QDialog, QProgressBar,
 )
 
+from openfix.config import SCORE_ATTENTION, SCORE_CHECK, SCORE_HEALTHY
+
 class ModernDialog(QDialog):
     def __init__(self, parent, title, subtitle, sections, warning=False):
         super().__init__(parent)
@@ -157,11 +159,11 @@ class HealthGauge(QWidget):
         self._coverage = coverage
         if score is None:
             self._state = "neutral"
-        elif score >= 90:
+        elif score >= SCORE_HEALTHY:
             self._state = "good"
-        elif score >= 75:
+        elif score >= SCORE_CHECK:
             self._state = "minor"
-        elif score >= 50:
+        elif score >= SCORE_ATTENTION:
             self._state = "warning"
         else:
             self._state = "danger"
@@ -242,7 +244,7 @@ class StatCard(QFrame):
         title_box.setSpacing(0)
         self.title = QLabel(title)
         self.title.setObjectName("StatTitle")
-        self.kicker = QLabel("LIVE CHECK")
+        self.kicker = QLabel("SNAPSHOT")
         self.kicker.setObjectName("StatKicker")
         title_box.addWidget(self.title)
         title_box.addWidget(self.kicker)
@@ -538,19 +540,24 @@ class SummaryBanner(QFrame):
         unavailable = result.get("unavailable_areas") or 0
 
         self.gauge.set_score(score, coverage)
-        if score >= 90:
+        if score is None:
+            headline = "Health score unavailable"
+            summary_text = "OpenFix could not collect enough diagnostic data to calculate a reliable health score."
+        elif score >= SCORE_HEALTHY:
             headline = "System looks healthy"
-        elif score >= 75:
+            summary_text = "OpenFix completed the local checks and prioritized the areas that matter most."
+        elif score >= SCORE_CHECK:
             headline = "Minor items are worth checking"
-        elif score >= 50:
+            summary_text = "OpenFix completed the local checks and prioritized the areas that matter most."
+        elif score >= SCORE_ATTENTION:
             headline = "Some areas need attention"
+            summary_text = "OpenFix completed the local checks and prioritized the areas that matter most."
         else:
             headline = "Important issues were detected"
+            summary_text = "OpenFix completed the local checks and prioritized the areas that matter most."
 
         self.title.setText(headline)
-        self.text.setText(
-            "OpenFix completed the local checks and prioritized the areas that matter most."
-        )
+        self.text.setText(summary_text)
         coverage_text = f"{coverage}%" if coverage is not None else "N/A"
         self.meta.setText(f"SCAN COVERAGE {coverage_text}  •  LAST SCAN {result['scan_time']}")
         self.healthy.number_label.setText(str(healthy))
@@ -686,7 +693,7 @@ class ResultPanel(QFrame):
             self.top_actions.set_actions(actions[:3])
             self.facts.set_lines(result.get("facts", []), "No diagnostic facts were produced because the scan stopped early.")
             self.issues.set_lines(result.get("issues", []), "The scan stopped before health analysis could finish.")
-            self.actions.set_lines(actions, "Run the scan again. If it repeats, inspect logs/openfix.log.")
+            self.actions.set_lines(actions, "Run the scan again. If it repeats, inspect the OpenFix log in %LOCALAPPDATA%/OpenFix/logs on Windows.")
             self.note.setText(
                 f"Scan failed  •  {result.get('scan_time', '--')}  •  Session {result.get('session_id', 'N/A')}"
             )
@@ -695,22 +702,44 @@ class ResultPanel(QFrame):
             self.go_doctor.hide()
             return
 
-        score = result["score"]
+        score = result.get("score")
         coverage = result.get("coverage")
         partial = coverage is not None and coverage < 100
 
         self.title.setText(result["title"])
+
+        if score is None:
+            self.score.setText("N/A")
+            self.set_badge("UNAVAILABLE", "neutral")
+            self.description.setText(
+                "OpenFix could not collect enough diagnostic data to calculate a reliable health score."
+            )
+            self.primary.set_data(result.get("primary_issue"), result.get("why_it_matters"))
+            actions = result.get("actions", [])
+            self.top_actions.set_actions(actions[:3])
+            self.facts.set_lines(result.get("facts", []), "No diagnostic facts are available.")
+            self.issues.set_lines(result.get("issues", []), "No health conclusion was made from unavailable data.")
+            self.actions.set_lines(actions, "Run the scan again if you want to retry unavailable checks.")
+            coverage_text = f"{coverage}%" if coverage is not None else "Not available"
+            self.note.setText(
+                f"Coverage {coverage_text}  •  {result.get('scan_time', '--')}\n{result.get('note', '')}"
+            )
+            self.current_target = result.get("target_doctor")
+            self.run_again.show()
+            self.go_doctor.setVisible(bool(self.current_target))
+            return
+
         self.score.setText(f"{score}/100")
 
-        if score >= 90:
+        if score >= SCORE_HEALTHY:
             label = "HEALTHY"
             state = "good"
             message = "No major problem was detected."
-        elif score >= 75:
+        elif score >= SCORE_CHECK:
             label = "CHECK"
             state = "minor"
             message = "A few items may be worth checking."
-        elif score >= 50:
+        elif score >= SCORE_ATTENTION:
             label = "ATTENTION"
             state = "warning"
             message = "Some diagnostic results need attention."

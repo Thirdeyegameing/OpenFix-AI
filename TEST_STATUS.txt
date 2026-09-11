@@ -1,0 +1,14 @@
+OpenFix AI v0.5.2-dev12 validation
+==================================
+
+Validation performed while preparing this package:
+
+- python -m compileall -q main.py openfix tests : PASSED
+- pytest -q                                  : 34 PASSED
+- python -m pytest -q                        : 34 PASSED
+- Synthetic Internet Doctor ICMP-blocked case: PASSED (online remains healthy)
+- Synthetic missing Storage data case         : PASSED (score is N/A/None, not 100)
+- Storage and Slow PC collector smoke checks  : PASSED in build environment
+
+Environment limitation:
+PySide6 is not installed in the packaging environment, so the actual GUI could not be launched here. The GUI Python sources compile successfully. Windows runtime behavior should be verified by launching `py main.py` on a Windows PC.

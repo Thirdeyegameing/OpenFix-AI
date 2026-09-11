@@ -1,0 +1,33 @@
+name: Bug report
+description: Report an OpenFix problem or incorrect diagnostic result
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please do not include passwords, private keys, or personal files."
+  - type: input
+    id: version
+    attributes:
+      label: OpenFix version
+      placeholder: v0.5.2-dev12
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines (remove personal information first)
