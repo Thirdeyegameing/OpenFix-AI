@@ -3,6 +3,7 @@ import os
 import re
 import json
 import socket
+import platform
 import subprocess
 from datetime import datetime
 
@@ -15,17 +16,18 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
     QPushButton,
     QFrame,
     QProgressBar,
     QScrollArea,
-    QMessageBox,
     QStackedWidget,
+    QDialog,
 )
 
 
-APP_VERSION = "0.5.2-dev4"
+APP_VERSION = "0.5.2-dev7"
 
 
 # =========================================================
@@ -56,9 +58,12 @@ def format_bytes(value):
 
     try:
         value = float(value)
+
         if value >= 1024 ** 3:
             return f"{value / (1024 ** 3):.1f} GB"
+
         return f"{value / (1024 ** 2):.0f} MB"
+
     except Exception:
         return "Not available"
 
@@ -69,15 +74,19 @@ def format_uptime(seconds):
 
     try:
         seconds = int(seconds)
+
         days = seconds // 86400
         hours = (seconds % 86400) // 3600
         minutes = (seconds % 3600) // 60
 
         if days > 0:
             return f"{days}d {hours}h"
+
         if hours > 0:
             return f"{hours}h {minutes}m"
+
         return f"{minutes}m"
+
     except Exception:
         return "Not available"
 
@@ -85,6 +94,7 @@ def format_uptime(seconds):
 def run_powershell(command, timeout=15):
     try:
         creationflags = 0
+
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
 
@@ -104,16 +114,19 @@ def run_powershell(command, timeout=15):
             creationflags=creationflags,
             timeout=timeout,
         )
-        return result.stdout.strip()
-    except Exception:
-        return ""
 
+        return {
+            "ok": result.returncode == 0,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+        }
 
-def coverage_percent(checks):
-    if not checks:
-        return 0
-    available = sum(1 for item in checks if bool(item))
-    return round((available / len(checks)) * 100)
+    except Exception as error:
+        return {
+            "ok": False,
+            "stdout": "",
+            "stderr": str(error),
+        }
 
 
 def make_result(
@@ -123,10 +136,9 @@ def make_result(
     issues=None,
     actions=None,
     note="",
-    coverage=100,
+    coverage=None,
     extra=None,
 ):
-    coverage = clamp(int(coverage))
     result = {
         "title": title,
         "score": clamp(int(score)),
@@ -135,7 +147,7 @@ def make_result(
         "actions": actions or [],
         "note": note,
         "coverage": coverage,
-        "partial": coverage < 100,
+        "scan_time": datetime.now().strftime("%H:%M:%S"),
     }
 
     if extra:
@@ -144,89 +156,149 @@ def make_result(
     return result
 
 
+def format_prioritized_actions(items, limit=7):
+    if not items:
+        return []
+
+    unique = []
+    seen = set()
+
+    for priority, text in sorted(
+        items,
+        key=lambda item: item[0],
+    ):
+        if text in seen:
+            continue
+
+        seen.add(text)
+        unique.append((priority, text))
+
+    formatted = []
+
+    for index, (priority, text) in enumerate(
+        unique[:limit]
+    ):
+        if index == 0:
+            prefix = "Do first"
+        elif priority <= 2:
+            prefix = "Next"
+        else:
+            prefix = "Later"
+
+        formatted.append(
+            f"{prefix}: {text}"
+        )
+
+    return formatted
+
+
 # =========================================================
 # SYSTEM INFORMATION
 # =========================================================
 
 def get_cpu_model():
-    command = r"""
-    Get-CimInstance Win32_Processor |
-    Select-Object -First 1 -ExpandProperty Name
-    """
-    output = run_powershell(command, timeout=8)
-    return output.strip() if output else "Not available"
+    result = run_powershell(
+        r"""
+        Get-CimInstance Win32_Processor |
+        Select-Object -First 1 -ExpandProperty Name
+        """,
+        timeout=8,
+    )
+
+    if result["ok"] and result["stdout"]:
+        return result["stdout"].strip()
+
+    processor = platform.processor()
+
+    return processor or "Not available"
 
 
 def get_windows_info():
-    command = r"""
-    $os = Get-CimInstance Win32_OperatingSystem |
-    Select-Object -First 1 Caption, Version, BuildNumber
-    $os | ConvertTo-Json -Compress
-    """
+    result = run_powershell(
+        r"""
+        Get-CimInstance Win32_OperatingSystem |
+        Select-Object Caption, Version, BuildNumber |
+        ConvertTo-Json -Compress
+        """,
+        timeout=8,
+    )
 
-    output = run_powershell(command, timeout=8)
-    if output:
+    if result["ok"] and result["stdout"]:
         try:
-            data = json.loads(output)
-            caption = data.get("Caption") or "Windows"
-            version = data.get("Version") or "Not available"
-            build = data.get("BuildNumber") or "Not available"
+            data = json.loads(
+                result["stdout"]
+            )
+
             return {
-                "available": True,
-                "name": caption,
-                "version": version,
-                "build": build,
+                "caption": (
+                    data.get("Caption")
+                    or "Microsoft Windows"
+                ),
+                "version": (
+                    data.get("Version")
+                    or "Unknown"
+                ),
+                "build": (
+                    data.get("BuildNumber")
+                    or "Unknown"
+                ),
             }
+
         except Exception:
             pass
 
     return {
-        "available": False,
-        "name": "Windows",
-        "version": "Not available",
-        "build": "Not available",
+        "caption": "Microsoft Windows",
+        "version": platform.version(),
+        "build": "Unknown",
     }
 
 
 def get_uptime():
     try:
-        boot_time = psutil.boot_time()
-        now = datetime.now().timestamp()
-        seconds = now - boot_time
+        seconds = (
+            datetime.now().timestamp()
+            - psutil.boot_time()
+        )
+
         return {
-            "available": True,
             "seconds": seconds,
             "text": format_uptime(seconds),
         }
+
     except Exception:
         return {
-            "available": False,
             "seconds": None,
             "text": "Not available",
         }
 
 
 # =========================================================
-# CPU / RAM / STORAGE
+# CPU / MEMORY / STORAGE
 # =========================================================
 
 def scan_cpu():
     try:
-        return psutil.cpu_percent(interval=1)
+        return psutil.cpu_percent(
+            interval=1
+        )
+
     except Exception:
         return None
 
 
 def scan_memory():
     try:
-        ram = psutil.virtual_memory()
+        memory = psutil.virtual_memory()
+
         return {
             "available": True,
-            "percent": ram.percent,
-            "used": ram.used,
-            "total": ram.total,
-            "free": ram.available,
+            "percent": memory.percent,
+            "used": memory.used,
+            "total": memory.total,
+            "free": memory.available,
         }
+
     except Exception:
         return {
             "available": False,
@@ -242,18 +314,29 @@ def scan_disks():
     seen = set()
 
     try:
-        partitions = psutil.disk_partitions(all=False)
+        partitions = psutil.disk_partitions(
+            all=False
+        )
+
     except Exception:
         partitions = []
 
     for partition in partitions:
         device = partition.device
-        if not device or device in seen:
+
+        if not device:
+            continue
+
+        if device in seen:
             continue
 
         seen.add(device)
+
         try:
-            usage = psutil.disk_usage(partition.mountpoint)
+            usage = psutil.disk_usage(
+                partition.mountpoint
+            )
+
             drives.append(
                 {
                     "device": device,
@@ -265,6 +348,7 @@ def scan_disks():
                     "percent": usage.percent,
                 }
             )
+
         except Exception:
             pass
 
@@ -272,68 +356,97 @@ def scan_disks():
 
 
 def find_system_drive(disks):
-    system_drive = os.environ.get("SystemDrive", "C:").upper().rstrip("\\")
+    system_drive = (
+        os.environ.get(
+            "SystemDrive",
+            "C:",
+        )
+        .upper()
+        .rstrip("\\")
+    )
 
     for drive in disks:
-        device = str(drive.get("device", "")).upper().rstrip("\\")
-        if device.startswith(system_drive):
+        device = (
+            str(
+                drive.get(
+                    "device",
+                    "",
+                )
+            )
+            .upper()
+            .rstrip("\\")
+        )
+
+        if device.startswith(
+            system_drive
+        ):
             return drive
 
-    return disks[0] if disks else None
+    if disks:
+        return disks[0]
+
+    return None
 
 
 # =========================================================
-# PROCESS INFORMATION
+# PROCESSES
 # =========================================================
 
 def scan_top_processes(limit=5):
     processes = []
 
     try:
-        iterator = psutil.process_iter(["pid", "name", "memory_info"])
-        for process in iterator:
+        for process in psutil.process_iter(
+            [
+                "pid",
+                "name",
+                "memory_info",
+            ]
+        ):
             try:
                 info = process.info
-                memory_info = info.get("memory_info")
-                memory = memory_info.rss if memory_info else 0
+
+                memory_info = info.get(
+                    "memory_info"
+                )
+
+                memory = (
+                    memory_info.rss
+                    if memory_info
+                    else 0
+                )
+
                 processes.append(
                     {
-                        "name": info.get("name") or "Unknown",
-                        "pid": info.get("pid") or 0,
+                        "name": (
+                            info.get("name")
+                            or "Unknown"
+                        ),
+                        "pid": (
+                            info.get("pid")
+                            or 0
+                        ),
                         "memory": memory,
                     }
                 )
+
             except Exception:
                 pass
+
     except Exception:
         pass
 
-    processes.sort(key=lambda item: item["memory"], reverse=True)
+    processes.sort(
+        key=lambda item: item["memory"],
+        reverse=True,
+    )
+
     return processes[:limit]
 
 
 # =========================================================
 # GPU
 # =========================================================
-
-def gpu_preference_score(item):
-    name = str(item.get("name", "")).lower()
-    score = 0
-
-    if "microsoft basic" in name:
-        return -1000
-
-    if any(token in name for token in ("rtx", "gtx", "radeon rx", "arc a")):
-        score += 500
-    elif "nvidia" in name or "amd" in name or "radeon" in name:
-        score += 300
-    elif "intel" in name:
-        score += 100
-
-    vram = item.get("vram") or 0
-    score += min(int(vram / (1024 ** 3)) * 10, 100)
-    return score
-
 
 def scan_gpu():
     gpu = {
@@ -348,70 +461,105 @@ def scan_gpu():
         "source": None,
     }
 
-    command = r"""
-    $items = Get-CimInstance Win32_VideoController |
-    Select-Object Name, AdapterRAM, DriverVersion
-    $items | ConvertTo-Json -Compress
-    """
+    result = run_powershell(
+        r"""
+        Get-CimInstance Win32_VideoController |
+        Select-Object Name, AdapterRAM, DriverVersion |
+        ConvertTo-Json -Compress
+        """,
+        timeout=10,
+    )
 
-    output = run_powershell(command, timeout=10)
     controllers = []
 
-    if output:
+    if result["ok"] and result["stdout"]:
         try:
-            raw = json.loads(output)
-            if isinstance(raw, dict):
-                raw = [raw]
+            data = json.loads(
+                result["stdout"]
+            )
 
-            if isinstance(raw, list):
-                for item in raw:
-                    if not isinstance(item, dict):
-                        continue
+            if isinstance(
+                data,
+                dict,
+            ):
+                data = [data]
 
-                    adapter_ram = safe_int(item.get("AdapterRAM"), 0)
-                    controllers.append(
-                        {
-                            "name": item.get("Name") or "Unknown GPU",
-                            "vram": adapter_ram if adapter_ram > 0 else None,
-                            "driver": item.get("DriverVersion") or "Unknown",
-                        }
-                    )
+            for item in data:
+                name = (
+                    item.get("Name")
+                    or "Unknown GPU"
+                )
+
+                controllers.append(
+                    {
+                        "name": name,
+                        "vram": (
+                            safe_int(
+                                item.get(
+                                    "AdapterRAM"
+                                )
+                            )
+                            or None
+                        ),
+                        "driver": (
+                            item.get(
+                                "DriverVersion"
+                            )
+                            or "Unknown"
+                        ),
+                        "basic": (
+                            "microsoft basic"
+                            in name.lower()
+                        ),
+                    }
+                )
+
         except Exception:
             controllers = []
 
-    real_controllers = [
-        item
-        for item in controllers
-        if "microsoft basic" not in item["name"].lower()
+    real = [
+        gpu_item
+        for gpu_item in controllers
+        if not gpu_item["basic"]
     ]
 
-    if not real_controllers:
-        real_controllers = controllers
+    if not real:
+        real = controllers
 
-    if real_controllers:
-        preferred = max(real_controllers, key=gpu_preference_score)
-        gpu.update(
-            {
-                "available": True,
-                "name": preferred["name"],
-                "vram": preferred["vram"],
-                "driver": preferred["driver"],
-                "gpu_count": len(real_controllers),
-                "all_gpus": [item["name"] for item in real_controllers],
-                "source": "Windows",
-            }
+    if real:
+        preferred = max(
+            real,
+            key=lambda item:
+            item["vram"] or 0,
         )
 
-    # NVIDIA gives reliable usage and temperature information when available.
+        gpu["available"] = True
+        gpu["name"] = preferred["name"]
+        gpu["vram"] = preferred["vram"]
+        gpu["driver"] = preferred["driver"]
+        gpu["gpu_count"] = len(real)
+        gpu["all_gpus"] = [
+            item["name"]
+            for item in real
+        ]
+        gpu["source"] = "Windows"
+
+    # NVIDIA enhanced data
     try:
         creationflags = 0
+
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
 
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.total,utilization.gpu,temperature.gpu,driver_version",
+                "--query-gpu="
+                "name,"
+                "memory.total,"
+                "utilization.gpu,"
+                "temperature.gpu,"
+                "driver_version",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -422,38 +570,66 @@ def scan_gpu():
             timeout=5,
         )
 
-        if result.returncode == 0 and result.stdout.strip():
-            parsed = []
-            for line in result.stdout.strip().splitlines():
-                parts = [part.strip() for part in line.split(",")]
+        if (
+            result.returncode == 0
+            and result.stdout.strip()
+        ):
+            cards = []
+
+            for line in result.stdout.splitlines():
+                parts = [
+                    part.strip()
+                    for part in line.split(",")
+                ]
+
                 if len(parts) < 5:
                     continue
 
-                parsed.append(
+                cards.append(
                     {
                         "name": parts[0],
-                        "vram_mb": safe_float(parts[1], 0),
-                        "usage": safe_float(parts[2]),
-                        "temperature": safe_float(parts[3]),
+                        "vram": (
+                            safe_float(
+                                parts[1],
+                                0,
+                            )
+                            * 1024
+                            * 1024
+                        ),
+                        "usage": safe_float(
+                            parts[2]
+                        ),
+                        "temperature": safe_float(
+                            parts[3]
+                        ),
                         "driver": parts[4],
                     }
                 )
 
-            if parsed:
-                preferred = max(parsed, key=lambda item: item["vram_mb"] or 0)
-                gpu.update(
-                    {
-                        "available": True,
-                        "name": preferred["name"],
-                        "vram": preferred["vram_mb"] * 1024 * 1024,
-                        "usage": preferred["usage"],
-                        "temperature": preferred["temperature"],
-                        "driver": preferred["driver"],
-                        "gpu_count": len(parsed),
-                        "all_gpus": [item["name"] for item in parsed],
-                        "source": "NVIDIA",
-                    }
+            if cards:
+                preferred = max(
+                    cards,
+                    key=lambda item:
+                    item["vram"] or 0,
                 )
+
+                gpu["available"] = True
+                gpu["name"] = preferred["name"]
+                gpu["vram"] = preferred["vram"]
+                gpu["usage"] = preferred["usage"]
+                gpu["temperature"] = (
+                    preferred[
+                        "temperature"
+                    ]
+                )
+                gpu["driver"] = preferred["driver"]
+                gpu["gpu_count"] = len(cards)
+                gpu["all_gpus"] = [
+                    item["name"]
+                    for item in cards
+                ]
+                gpu["source"] = "NVIDIA"
+
     except Exception:
         pass
 
@@ -465,20 +641,34 @@ def scan_gpu():
 # =========================================================
 
 def get_active_adapter():
-    command = r"""
-    $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
-    Where-Object {$_.NextHop -ne "0.0.0.0"} |
-    Sort-Object RouteMetric |
-    Select-Object -First 1
+    result = run_powershell(
+        r"""
+        $route =
+        Get-NetRoute `
+            -DestinationPrefix "0.0.0.0/0" `
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.NextHop -ne "0.0.0.0"
+        } |
+        Sort-Object RouteMetric |
+        Select-Object -First 1
 
-    if ($route) {
-        Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue |
-        Select-Object Name, InterfaceDescription, LinkSpeed, MacAddress, ifIndex |
-        ConvertTo-Json -Compress
-    }
-    """
+        if ($route) {
+            Get-NetAdapter `
+                -InterfaceIndex $route.InterfaceIndex `
+                -ErrorAction SilentlyContinue |
+            Select-Object `
+                Name,
+                InterfaceDescription,
+                LinkSpeed,
+                MacAddress,
+                ifIndex |
+            ConvertTo-Json -Compress
+        }
+        """,
+        timeout=10,
+    )
 
-    output = run_powershell(command, timeout=10)
     adapter = {
         "available": False,
         "name": "Not available",
@@ -488,20 +678,35 @@ def get_active_adapter():
         "interface_index": None,
     }
 
-    if output:
+    if result["ok"] and result["stdout"]:
         try:
-            data = json.loads(output)
-            if isinstance(data, dict):
-                adapter.update(
-                    {
-                        "available": True,
-                        "name": data.get("Name") or "Not available",
-                        "description": data.get("InterfaceDescription") or "Not available",
-                        "link_speed": data.get("LinkSpeed") or "Not available",
-                        "mac": data.get("MacAddress") or "Not available",
-                        "interface_index": data.get("ifIndex"),
-                    }
+            data = json.loads(
+                result["stdout"]
+            )
+
+            adapter["available"] = True
+            adapter["name"] = (
+                data.get("Name")
+                or "Not available"
+            )
+            adapter["description"] = (
+                data.get(
+                    "InterfaceDescription"
                 )
+                or "Not available"
+            )
+            adapter["link_speed"] = (
+                data.get("LinkSpeed")
+                or "Not available"
+            )
+            adapter["mac"] = (
+                data.get("MacAddress")
+                or "Not available"
+            )
+            adapter["interface_index"] = (
+                data.get("ifIndex")
+            )
+
         except Exception:
             pass
 
@@ -509,84 +714,150 @@ def get_active_adapter():
 
 
 def get_default_gateway():
-    command = r"""
-    Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
-    Where-Object {$_.NextHop -ne "0.0.0.0"} |
-    Sort-Object RouteMetric |
-    Select-Object -First 1 -ExpandProperty NextHop
-    """
+    result = run_powershell(
+        r"""
+        Get-NetRoute `
+            -DestinationPrefix "0.0.0.0/0" `
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.NextHop -ne "0.0.0.0"
+        } |
+        Sort-Object RouteMetric |
+        Select-Object -First 1 `
+            -ExpandProperty NextHop
+        """,
+        timeout=10,
+    )
 
-    output = run_powershell(command, timeout=10)
-    return output if output else "Not available"
+    if result["ok"] and result["stdout"]:
+        return result["stdout"]
+
+    return "Not available"
 
 
 def get_dns_servers():
-    command = r"""
-    Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object {$_.ServerAddresses.Count -gt 0} |
-    Select-Object -ExpandProperty ServerAddresses |
-    Select-Object -Unique
-    """
+    result = run_powershell(
+        r"""
+        Get-DnsClientServerAddress `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ServerAddresses.Count -gt 0
+        } |
+        Select-Object `
+            -ExpandProperty ServerAddresses |
+        Select-Object -Unique
+        """,
+        timeout=10,
+    )
 
-    output = run_powershell(command, timeout=10)
-    if not output:
+    if not result["ok"]:
         return []
 
-    return [line.strip() for line in output.splitlines() if line.strip()]
+    return [
+        line.strip()
+        for line in result[
+            "stdout"
+        ].splitlines()
+        if line.strip()
+    ]
 
 
 def test_dns():
     try:
-        socket.gethostbyname("cloudflare.com")
-        return {"available": True, "ok": True}
-    except socket.gaierror:
-        return {"available": True, "ok": False}
+        socket.gethostbyname(
+            "cloudflare.com"
+        )
+
+        return True
+
     except Exception:
-        return {"available": False, "ok": False}
+        return False
 
 
 def parse_ping_output(output):
-    result = {"ping": None, "packet_loss": None}
+    result = {
+        "ping": None,
+        "packet_loss": None,
+    }
 
-    matches = re.findall(
+    times = re.findall(
         r"(?:time|เวลา)\s*[=<]\s*(\d+)\s*ms",
         output,
         flags=re.IGNORECASE,
     )
 
-    numbers = [safe_int(value) for value in matches]
-    if numbers:
-        result["ping"] = round(sum(numbers) / len(numbers))
-    elif re.search(r"(?:time|เวลา)\s*<\s*1\s*ms", output, flags=re.IGNORECASE):
+    values = [
+        safe_int(item)
+        for item in times
+    ]
+
+    if values:
+        result["ping"] = round(
+            sum(values)
+            / len(values)
+        )
+
+    elif re.search(
+        r"(?:time|เวลา)\s*<\s*1\s*ms",
+        output,
+        flags=re.IGNORECASE,
+    ):
         result["ping"] = 1
 
-    loss_patterns = [
+    patterns = [
         r"(\d{1,3})%\s*loss",
         r"lost\s*=\s*\d+\s*\((\d{1,3})%",
         r"สูญหาย\s*=\s*\d+\s*\((\d{1,3})%",
     ]
 
-    for pattern in loss_patterns:
-        match = re.search(pattern, output, flags=re.IGNORECASE)
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            output,
+            flags=re.IGNORECASE,
+        )
+
         if match:
-            value = safe_int(match.group(1))
+            value = safe_int(
+                match.group(1)
+            )
+
             if 0 <= value <= 100:
-                result["packet_loss"] = value
+                result[
+                    "packet_loss"
+                ] = value
                 break
 
-    if result["packet_loss"] is None:
-        percentages = re.findall(r"(\d{1,3})\s*%", output)
-        values = [safe_int(value) for value in percentages]
-        values = [value for value in values if 0 <= value <= 100]
-        if values:
-            result["packet_loss"] = values[-1]
+    if result[
+        "packet_loss"
+    ] is None:
+        percentages = re.findall(
+            r"(\d{1,3})\s*%",
+            output,
+        )
+
+        percentages = [
+            safe_int(item)
+            for item in percentages
+        ]
+
+        percentages = [
+            value
+            for value in percentages
+            if 0 <= value <= 100
+        ]
+
+        if percentages:
+            result[
+                "packet_loss"
+            ] = percentages[-1]
 
     return result
 
 
 def test_ping():
-    result_data = {
-        "available": False,
+    output = {
         "internet": False,
         "ping": None,
         "packet_loss": None,
@@ -594,11 +865,19 @@ def test_ping():
 
     try:
         creationflags = 0
+
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
 
-        result = subprocess.run(
-            ["ping", "-n", "4", "-w", "2000", "1.1.1.1"],
+        process = subprocess.run(
+            [
+                "ping",
+                "-n",
+                "4",
+                "-w",
+                "2000",
+                "1.1.1.1",
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -607,33 +886,32 @@ def test_ping():
             timeout=12,
         )
 
-        parsed = parse_ping_output(result.stdout)
-        result_data.update(
-            {
-                "available": True,
-                "internet": result.returncode == 0,
-                "ping": parsed["ping"],
-                "packet_loss": parsed["packet_loss"],
-            }
+        parsed = parse_ping_output(
+            process.stdout
         )
+
+        output["internet"] = (
+            process.returncode == 0
+        )
+        output["ping"] = parsed["ping"]
+        output["packet_loss"] = (
+            parsed["packet_loss"]
+        )
+
     except Exception:
         pass
 
-    return result_data
+    return output
 
 
 def scan_network():
-    adapter = get_active_adapter()
     ping = test_ping()
-    dns = test_dns()
 
     return {
-        "adapter": adapter,
+        "adapter": get_active_adapter(),
         "gateway": get_default_gateway(),
         "dns_servers": get_dns_servers(),
-        "dns_available": dns["available"],
-        "dns_ok": dns["ok"],
-        "ping_test_available": ping["available"],
+        "dns_ok": test_dns(),
         "internet": ping["internet"],
         "ping": ping["ping"],
         "packet_loss": ping["packet_loss"],
@@ -641,73 +919,152 @@ def scan_network():
 
 
 # =========================================================
-# WINDOWS EVENT LOG
+# EVENT LOG
 # =========================================================
 
 def scan_event_logs():
-    command = r"""
-    try {
-        $start = (Get-Date).AddHours(-24)
-        $events = Get-WinEvent -FilterHashtable @{
-            LogName=@('System','Application')
-            Level=@(1,2,3)
-            StartTime=$start
-        } -MaxEvents 60 -ErrorAction SilentlyContinue |
-        Select-Object TimeCreated, LogName, ProviderName, Id, LevelDisplayName, Message
+    result = run_powershell(
+        r"""
+        try {
+            $start = (Get-Date).AddHours(-24)
 
-        [PSCustomObject]@{
-            Success = $true
-            Events = @($events)
-        } | ConvertTo-Json -Depth 5 -Compress
-    }
-    catch {
-        [PSCustomObject]@{
-            Success = $false
-            Events = @()
-        } | ConvertTo-Json -Depth 5 -Compress
-    }
-    """
+            $events =
+            Get-WinEvent `
+                -FilterHashtable @{
+                    LogName=@(
+                        'System',
+                        'Application'
+                    )
+                    Level=@(1,2,3)
+                    StartTime=$start
+                } `
+                -MaxEvents 60 `
+                -ErrorAction SilentlyContinue |
+            Select-Object `
+                TimeCreated,
+                LogName,
+                ProviderName,
+                Id,
+                LevelDisplayName,
+                Message
 
-    output = run_powershell(command, timeout=15)
-    if not output:
-        return {"available": False, "events": []}
+            [PSCustomObject]@{
+                Success = $true
+                Events = @($events)
+            } |
+            ConvertTo-Json `
+                -Depth 5 `
+                -Compress
+        }
+        catch {
+            [PSCustomObject]@{
+                Success = $false
+                Events = @()
+            } |
+            ConvertTo-Json `
+                -Depth 5 `
+                -Compress
+        }
+        """,
+        timeout=15,
+    )
+
+    package = {
+        "available": False,
+        "events": [],
+    }
+
+    if not result["stdout"]:
+        return package
 
     try:
-        payload = json.loads(output)
-        available = bool(payload.get("Success"))
-        data = payload.get("Events") or []
-        if isinstance(data, dict):
-            data = [data]
-    except Exception:
-        return {"available": False, "events": []}
-
-    events = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-
-        message = str(item.get("Message") or "").replace("\r", " ").replace("\n", " ")
-        if len(message) > 350:
-            message = message[:350] + "..."
-
-        events.append(
-            {
-                "time": item.get("TimeCreated") or "",
-                "log": item.get("LogName") or "Unknown",
-                "provider": item.get("ProviderName") or "Unknown",
-                "id": safe_int(item.get("Id"), 0),
-                "level": item.get("LevelDisplayName") or "Unknown",
-                "message": message,
-            }
+        data = json.loads(
+            result["stdout"]
         )
 
-    return {"available": available, "events": events}
+        package[
+            "available"
+        ] = bool(
+            data.get("Success")
+        )
+
+        raw_events = (
+            data.get("Events")
+            or []
+        )
+
+        if isinstance(
+            raw_events,
+            dict,
+        ):
+            raw_events = [
+                raw_events
+            ]
+
+        events = []
+
+        for item in raw_events:
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            message = str(
+                item.get("Message")
+                or ""
+            )
+
+            message = (
+                message
+                .replace("\r", " ")
+                .replace("\n", " ")
+            )
+
+            if len(message) > 350:
+                message = (
+                    message[:350]
+                    + "..."
+                )
+
+            events.append(
+                {
+                    "provider": (
+                        item.get(
+                            "ProviderName"
+                        )
+                        or "Unknown"
+                    ),
+                    "id": safe_int(
+                        item.get("Id")
+                    ),
+                    "level": (
+                        item.get(
+                            "LevelDisplayName"
+                        )
+                        or "Unknown"
+                    ),
+                    "message": message,
+                }
+            )
+
+        package["events"] = events
+
+    except Exception:
+        pass
+
+    return package
 
 
-def analyze_event_logs(event_scan):
-    events = event_scan.get("events", [])
+def analyze_event_logs(package):
+    events = package[
+        "events"
+    ]
+
     analysis = {
-        "available": bool(event_scan.get("available")),
+        "available": package[
+            "available"
+        ],
         "total": len(events),
         "critical": 0,
         "errors": 0,
@@ -723,182 +1080,391 @@ def analyze_event_logs(event_scan):
     }
 
     for event in events:
-        provider = str(event.get("provider") or "").lower()
-        level = str(event.get("level") or "").lower()
-        message = str(event.get("message") or "").lower()
-        event_id = safe_int(event.get("id"), 0)
+        provider = str(
+            event.get(
+                "provider"
+            )
+            or ""
+        ).lower()
+
+        level = str(
+            event.get(
+                "level"
+            )
+            or ""
+        ).lower()
+
+        message = str(
+            event.get(
+                "message"
+            )
+            or ""
+        ).lower()
+
+        event_id = safe_int(
+            event.get("id")
+        )
 
         if "critical" in level:
-            analysis["critical"] += 1
+            analysis[
+                "critical"
+            ] += 1
         elif "error" in level:
-            analysis["errors"] += 1
+            analysis[
+                "errors"
+            ] += 1
         elif "warning" in level:
-            analysis["warnings"] += 1
+            analysis[
+                "warnings"
+            ] += 1
 
-        # Common Windows noise. These should not heavily influence health scoring.
-        if "microsoft-windows-capi2" in provider:
-            analysis["ignored_noise"] += 1
+        if (
+            "microsoft-windows-capi2"
+            in provider
+        ):
+            analysis[
+                "ignored_noise"
+            ] += 1
             continue
 
-        if "distributedcom" in provider and event_id == 10016:
-            analysis["ignored_noise"] += 1
+        if (
+            "distributedcom"
+            in provider
+            and event_id == 10016
+        ):
+            analysis[
+                "ignored_noise"
+            ] += 1
             continue
 
-        # Common Service Control Manager events often describe software/service startup issues,
-        # not physical hardware failure. Keep them as generic Windows errors.
         category = None
 
-        if "whea" in provider or (
-            "hardware error" in message and ("error" in level or "critical" in level)
+        if (
+            "whea"
+            in provider
+            or (
+                "hardware error"
+                in message
+                and (
+                    "error" in level
+                    or "critical"
+                    in level
+                )
+            )
         ):
-            analysis["hardware_errors"] += 1
+            analysis[
+                "hardware_errors"
+            ] += 1
             category = "Hardware"
 
-        elif ("kernel-power" in provider and event_id == 41) or event_id == 6008:
-            analysis["shutdown_errors"] += 1
+        elif (
+            (
+                "kernel-power"
+                in provider
+                and event_id == 41
+            )
+            or event_id == 6008
+        ):
+            analysis[
+                "shutdown_errors"
+            ] += 1
             category = "Unexpected Shutdown"
 
-        elif any(token in provider for token in ("nvlddmkm", "amdwddmg", "dxgkrnl")):
-            if "error" in level or "critical" in level:
-                analysis["gpu_errors"] += 1
-                category = "Graphics"
+        elif any(
+            token in provider
+            for token in (
+                "nvlddmkm",
+                "amdwddmg",
+                "dxgkrnl",
+            )
+        ) and (
+            "error" in level
+            or "critical" in level
+        ):
+            analysis[
+                "gpu_errors"
+            ] += 1
+            category = "Graphics"
 
-        elif provider == "display" and ("error" in level or "critical" in level):
-            analysis["gpu_errors"] += 1
+        elif (
+            provider == "display"
+            and (
+                "error" in level
+                or "critical" in level
+            )
+        ):
+            analysis[
+                "gpu_errors"
+            ] += 1
             category = "Graphics"
 
         elif any(
             token in provider
-            for token in ("disk", "ntfs", "storahci", "stornvme", "volmgr", "volsnap")
+            for token in (
+                "disk",
+                "ntfs",
+                "storahci",
+                "stornvme",
+                "volmgr",
+                "volsnap",
+            )
+        ) and (
+            "error" in level
+            or "critical" in level
         ):
-            # Storage warnings are common. Only errors/critical events affect score.
-            if "error" in level or "critical" in level:
-                analysis["storage_errors"] += 1
-                category = "Storage"
+            analysis[
+                "storage_errors"
+            ] += 1
+            category = "Storage"
 
-        elif (event_id == 1000 or "application error" in provider) and (
-            "error" in level or "critical" in level
+        elif (
+            event_id == 1000
+            or "application error"
+            in provider
+        ) and (
+            "error" in level
+            or "critical" in level
         ):
-            analysis["app_crashes"] += 1
+            analysis[
+                "app_crashes"
+            ] += 1
             category = "Application Crash"
 
-        elif "error" in level or "critical" in level:
-            analysis["generic_errors"] += 1
+        elif (
+            "error" in level
+            or "critical" in level
+        ):
+            analysis[
+                "generic_errors"
+            ] += 1
             category = "Windows"
 
-        if category and len(analysis["important"]) < 8:
-            analysis["important"].append({**event, "category": category})
+        if (
+            category
+            and len(
+                analysis["important"]
+            ) < 8
+        ):
+            analysis[
+                "important"
+            ].append(
+                {
+                    **event,
+                    "category": category,
+                }
+            )
 
     return analysis
 
 
 # =========================================================
-# COLLECT SYSTEM DATA
+# COLLECT DATA
 # =========================================================
 
 def collect_system_data():
-    cpu = scan_cpu()
-    memory = scan_memory()
     disks = scan_disks()
-    gpu = scan_gpu()
-    network = scan_network()
-    processes = scan_top_processes(5)
-    windows = get_windows_info()
-    uptime = get_uptime()
-    cpu_model = get_cpu_model()
 
     return {
-        "cpu": cpu,
-        "cpu_model": cpu_model,
-        "memory": memory,
+        "cpu": scan_cpu(),
+        "cpu_model": get_cpu_model(),
+        "memory": scan_memory(),
         "disks": disks,
-        "system_drive": find_system_drive(disks),
-        "gpu": gpu,
-        "network": network,
-        "processes": processes,
-        "windows": windows,
-        "uptime": uptime,
+        "system_drive": (
+            find_system_drive(
+                disks
+            )
+        ),
+        "processes": (
+            scan_top_processes(5)
+        ),
+        "gpu": scan_gpu(),
+        "network": scan_network(),
+        "windows": get_windows_info(),
+        "uptime": get_uptime(),
     }
 
 
+def calculate_coverage(
+    data,
+    event_analysis=None,
+):
+    checks = []
+
+    checks.append(
+        data["cpu"] is not None
+    )
+
+    checks.append(
+        data[
+            "memory"
+        ]["available"]
+    )
+
+    checks.append(
+        data[
+            "system_drive"
+        ] is not None
+    )
+
+    checks.append(
+        data[
+            "network"
+        ]["adapter"][
+            "available"
+        ]
+        or data[
+            "network"
+        ]["internet"]
+    )
+
+    checks.append(
+        data["gpu"][
+            "available"
+        ]
+    )
+
+    checks.append(
+        bool(
+            data["processes"]
+        )
+    )
+
+    if event_analysis is not None:
+        checks.append(
+            event_analysis[
+                "available"
+            ]
+        )
+
+    available = sum(
+        1
+        for value in checks
+        if value
+    )
+
+    if not checks:
+        return 0
+
+    return round(
+        available
+        / len(checks)
+        * 100
+    )
+
+
 # =========================================================
-# DOCTOR - INTERNET
+# DOCTORS
 # =========================================================
 
 def doctor_internet(data):
     network = data["network"]
+
     score = 100
     facts = []
     issues = []
     actions = []
 
-    checks = [
-        network["ping_test_available"],
-        network["dns_available"],
-        network["ping"] is not None,
-        network["packet_loss"] is not None,
-        network["adapter"]["available"],
-    ]
-    coverage = coverage_percent(checks)
-
-    if network["ping_test_available"]:
-        if network["internet"]:
-            facts.append("Internet connection is reachable.")
-        else:
-            score -= 45
-            issues.append("OpenFix could not reach the internet.")
-            actions.append("Check the router, Wi-Fi connection or Ethernet cable.")
+    if network["internet"]:
+        facts.append(
+            "Internet connection is reachable."
+        )
     else:
-        facts.append("Internet reachability test is not available.")
+        score -= 45
+        issues.append(
+            "OpenFix could not reach the internet."
+        )
+        actions.append(
+            "Check the router, Wi-Fi connection or Ethernet cable."
+        )
 
-    if network["dns_available"]:
-        if network["dns_ok"]:
-            facts.append("Website name lookup (DNS) is working.")
-        else:
-            score -= 20
-            issues.append("Website name lookup may not be working correctly.")
-            actions.append("Check DNS settings before resetting the whole network.")
+    if network["dns_ok"]:
+        facts.append(
+            "Website name lookup (DNS) is working."
+        )
     else:
-        facts.append("DNS test is not available.")
+        score -= 20
+        issues.append(
+            "Website name lookup may not be working correctly."
+        )
 
     ping = network["ping"]
+
     if ping is None:
-        facts.append("Internet response time could not be measured.")
+        facts.append(
+            "Response time could not be measured."
+        )
     elif ping < 80:
-        facts.append(f"Internet response time looks good: {ping} ms.")
+        facts.append(
+            f"Internet response time looks good: {ping} ms."
+        )
     elif ping < 150:
         score -= 10
-        facts.append(f"Internet response time: {ping} ms.")
-        issues.append("Network delay is higher than ideal.")
+        issues.append(
+            f"Network delay is higher than ideal ({ping} ms)."
+        )
     else:
         score -= 25
-        facts.append(f"Internet response time: {ping} ms.")
-        issues.append("Network delay is very high.")
-        actions.append("Check Wi-Fi quality, downloads and ISP conditions.")
+        issues.append(
+            f"Network delay is very high ({ping} ms)."
+        )
 
-    loss = network["packet_loss"]
+    loss = network[
+        "packet_loss"
+    ]
+
     if loss is None:
-        facts.append("Packet loss could not be measured.")
+        facts.append(
+            "Packet loss could not be measured."
+        )
     elif loss == 0:
-        facts.append("No packet loss was detected.")
+        facts.append(
+            "No packet loss was detected."
+        )
     elif loss < 3:
         score -= 3
-        facts.append(f"Packet loss: {loss}%.")
+        facts.append(
+            f"Packet loss: {loss}%."
+        )
     elif loss < 10:
         score -= 15
-        issues.append(f"The connection is losing some data packets ({loss}%).")
-        actions.append("Check Wi-Fi signal, cable quality and router stability.")
+        issues.append(
+            f"Some network data is being lost ({loss}%)."
+        )
     else:
         score -= 30
-        issues.append(f"Heavy packet loss was detected ({loss}%).")
-        actions.append("Check the local network connection before changing Windows settings.")
+        issues.append(
+            f"Heavy packet loss was detected ({loss}%)."
+        )
 
-    adapter = network["adapter"]
+    adapter = network[
+        "adapter"
+    ]
+
     if adapter["available"]:
-        facts.append(f"Active network adapter: {adapter['name']}.")
-        facts.append(f"Adapter connection speed: {adapter['link_speed']}.")
-    else:
-        facts.append("Active network adapter details are not available.")
+        facts.append(
+            f"Active adapter: {adapter['name']}."
+        )
+        facts.append(
+            f"Adapter speed: {adapter['link_speed']}."
+        )
+
+    coverage_checks = [
+        network["internet"],
+        network["dns_ok"],
+        ping is not None,
+        loss is not None,
+        adapter["available"],
+    ]
+
+    coverage = round(
+        sum(
+            1
+            for item in coverage_checks
+            if item
+        )
+        / len(coverage_checks)
+        * 100
+    )
 
     return make_result(
         "Internet Doctor",
@@ -907,16 +1473,12 @@ def doctor_internet(data):
         issues,
         actions,
         (
-            "Ping means response delay. Packet loss means some network data did not arrive. "
-            "This scan is only a short snapshot."
+            "Ping measures response delay. "
+            "Packet loss measures network data that did not arrive."
         ),
         coverage=coverage,
     )
 
-
-# =========================================================
-# DOCTOR - GAMING
-# =========================================================
 
 def doctor_gaming(data):
     score = 100
@@ -925,75 +1487,92 @@ def doctor_gaming(data):
     actions = []
 
     cpu = data["cpu"]
-    ram = data["memory"]["percent"]
+    ram = data[
+        "memory"
+    ]["percent"]
+
     gpu = data["gpu"]
     network = data["network"]
 
-    coverage = coverage_percent(
-        [
-            cpu is not None,
-            ram is not None,
-            gpu["available"],
-            gpu["temperature"] is not None,
-            network["ping"] is not None or network["packet_loss"] is not None,
-        ]
-    )
+    if cpu is not None:
+        facts.append(
+            f"CPU usage: {cpu:.0f}%."
+        )
 
-    if cpu is None:
-        facts.append("CPU usage could not be measured.")
-    else:
-        facts.append(f"CPU usage: {cpu:.0f}%.")
         if cpu >= 95:
             score -= 25
-            issues.append("CPU usage is extremely high.")
-            actions.append("Check which program is using the most CPU while gaming.")
+            issues.append(
+                "CPU usage is extremely high."
+            )
         elif cpu >= 85:
             score -= 12
-            issues.append("CPU usage is high.")
+            issues.append(
+                "CPU usage is high."
+            )
 
-    if ram is None:
-        facts.append("RAM usage could not be measured.")
-    else:
-        facts.append(f"RAM usage: {ram:.0f}%.")
+    if ram is not None:
+        facts.append(
+            f"RAM usage: {ram:.0f}%."
+        )
+
         if ram >= 95:
             score -= 25
-            issues.append("RAM usage is extremely high.")
-            actions.append("Close unnecessary applications before playing.")
+            issues.append(
+                "RAM usage is extremely high."
+            )
         elif ram >= 85:
             score -= 12
-            issues.append("RAM usage is high.")
+            issues.append(
+                "RAM usage is high."
+            )
 
     if gpu["available"]:
-        facts.append(f"Graphics device: {gpu['name']}.")
-        if gpu["gpu_count"] > 1:
-            facts.append(f"{gpu['gpu_count']} graphics devices were detected.")
-    else:
-        facts.append("Graphics device information is not available.")
+        facts.append(
+            f"Graphics device: {gpu['name']}."
+        )
 
-    if gpu["temperature"] is None:
-        facts.append("GPU temperature cannot be read on this system.")
-    else:
-        temperature = gpu["temperature"]
-        facts.append(f"GPU temperature: {temperature:.0f}°C.")
+    if gpu[
+        "temperature"
+    ] is not None:
+        temperature = gpu[
+            "temperature"
+        ]
+
+        facts.append(
+            f"GPU temperature: {temperature:.0f}°C."
+        )
+
         if temperature >= 90:
             score -= 30
-            issues.append("GPU temperature is dangerously high.")
-            actions.append("Check GPU fans, dust and case airflow.")
+            issues.append(
+                "GPU temperature is dangerously high."
+            )
+            actions.append(
+                "Check GPU cooling, fans and case airflow."
+            )
         elif temperature >= 83:
             score -= 12
-            issues.append("GPU temperature is higher than ideal.")
+            issues.append(
+                "GPU temperature is higher than ideal."
+            )
+    else:
+        facts.append(
+            "GPU temperature sensor data is not available."
+        )
 
-    ping = network["ping"]
-    loss = network["packet_loss"]
+    if (
+        network["packet_loss"]
+        is not None
+        and network["packet_loss"] >= 3
+    ):
+        score -= 15
+        issues.append(
+            "Network instability may cause online-game lag."
+        )
 
-    if ping is not None:
-        facts.append(f"Network response time: {ping} ms.")
-    if loss is not None:
-        facts.append(f"Packet loss: {loss}%.")
-        if loss >= 3:
-            score -= 15
-            issues.append("Network instability may cause online-game lag.")
-            actions.append("Check the network connection before lowering graphics settings.")
+    coverage = calculate_coverage(
+        data
+    )
 
     return make_result(
         "Gaming Doctor",
@@ -1001,14 +1580,13 @@ def doctor_gaming(data):
         facts,
         issues,
         actions,
-        "This scan checks common system conditions. It does not currently measure in-game FPS or frame time.",
+        (
+            "This scan checks common system conditions. "
+            "It does not currently measure in-game FPS or frame time."
+        ),
         coverage=coverage,
     )
 
-
-# =========================================================
-# DOCTOR - SLOW PC
-# =========================================================
 
 def doctor_slow_pc(data):
     score = 100
@@ -1019,63 +1597,69 @@ def doctor_slow_pc(data):
     cpu = data["cpu"]
     memory = data["memory"]
     ram = memory["percent"]
-    system_drive = data["system_drive"]
-    processes = data["processes"]
-
-    coverage = coverage_percent(
-        [
-            cpu is not None,
-            ram is not None,
-            bool(processes),
-            system_drive is not None,
-        ]
-    )
 
     if cpu is not None:
-        facts.append(f"CPU usage: {cpu:.0f}%.")
+        facts.append(
+            f"CPU usage: {cpu:.0f}%."
+        )
+
         if cpu >= 90:
             score -= 22
-            issues.append("CPU usage is very high.")
-            actions.append("Check Task Manager for applications using a lot of CPU.")
+            issues.append(
+                "CPU usage is very high."
+            )
         elif cpu >= 80:
             score -= 10
-            issues.append("CPU usage is currently high.")
-    else:
-        facts.append("CPU usage is not available.")
+            issues.append(
+                "CPU usage is currently high."
+            )
 
     if ram is not None:
-        facts.append(f"RAM usage: {ram:.0f}%.")
+        facts.append(
+            f"RAM usage: {ram:.0f}%."
+        )
+
         if ram >= 95:
             score -= 28
-            issues.append("Almost all available RAM is being used.")
+            issues.append(
+                "Almost all available RAM is being used."
+            )
         elif ram >= 85:
             score -= 15
-            issues.append("RAM usage is high.")
-    else:
-        facts.append("RAM usage is not available.")
+            issues.append(
+                "RAM usage is high."
+            )
 
-    if processes:
-        top = processes[0]
-        facts.append(f"Highest RAM usage: {top['name']} ({format_bytes(top['memory'])}).")
+    if data["processes"]:
+        top = data[
+            "processes"
+        ][0]
 
-        if ram is not None and ram >= 85 and memory["total"]:
-            share = top["memory"] / memory["total"]
-            if share >= 0.15:
-                actions.append(
-                    f"Check {top['name']} first because it is using a large share of system RAM."
-                )
+        facts.append(
+            "Highest RAM usage: "
+            f"{top['name']} "
+            f"({format_bytes(top['memory'])})."
+        )
 
-    if system_drive:
-        free_gb = system_drive["free"] / (1024 ** 3)
-        free_percent = 100 - system_drive["percent"]
-        facts.append(f"Windows drive free space: {free_gb:.1f} GB ({free_percent:.0f}% free).")
+    drive = data[
+        "system_drive"
+    ]
 
-        if free_gb < 5 or free_percent < 3:
+    if drive:
+        free_gb = (
+            drive["free"]
+            / (1024 ** 3)
+        )
+
+        facts.append(
+            f"Windows drive free space: {free_gb:.1f} GB."
+        )
+
+        if free_gb < 5:
             score -= 20
-            issues.append("The Windows drive is almost full.")
-            actions.append("Free some space on the Windows drive.")
-    else:
-        facts.append("Windows drive information is not available.")
+            issues.append(
+                "The Windows drive is almost full."
+            )
 
     return make_result(
         "Slow PC Doctor",
@@ -1083,50 +1667,74 @@ def doctor_slow_pc(data):
         facts,
         issues,
         actions,
-        "CPU and RAM usage can change quickly. For better results, run this scan while the PC feels slow.",
-        coverage=coverage,
+        (
+            "Run this Doctor while the PC actually feels slow for more useful results."
+        ),
+        coverage=calculate_coverage(
+            data
+        ),
     )
 
 
-# =========================================================
-# DOCTOR - STORAGE
-# =========================================================
-
 def doctor_storage(data):
-    score = 100
-    facts = []
-    issues = []
-    actions = []
     disks = data["disks"]
 
     if not disks:
         return make_result(
             "Storage Doctor",
-            100,
+            80,
             [],
             [],
-            ["Try running the scan again if drive information should be available."],
-            "Drive information could not be read, so OpenFix did not score storage health.",
+            [],
+            (
+                "Drive information could not be read. "
+                "No storage-health conclusion was made."
+            ),
             coverage=0,
         )
 
+    score = 100
+    facts = []
+    issues = []
+    actions = []
+
     for drive in disks:
-        free_gb = drive["free"] / (1024 ** 3)
-        free_percent = 100 - drive["percent"]
-        facts.append(
-            f"{drive['device']} has {free_gb:.1f} GB free ({free_percent:.0f}% free)."
+        free_gb = (
+            drive["free"]
+            / (1024 ** 3)
         )
 
-        if free_gb < 5 or free_percent < 3:
+        free_percent = (
+            100
+            - drive["percent"]
+        )
+
+        facts.append(
+            f"{drive['device']} has "
+            f"{free_gb:.1f} GB free "
+            f"({free_percent:.0f}% free)."
+        )
+
+        if (
+            free_gb < 5
+            or free_percent < 3
+        ):
             score -= 28
-            issues.append(f"{drive['device']} is critically low on free space.")
-            actions.append(
-                f"Free space on {drive['device']} before large updates or installations."
+            issues.append(
+                f"{drive['device']} is critically low on free space."
             )
-        elif free_gb < 15 or free_percent < 8:
+            actions.append(
+                f"Free space on {drive['device']}."
+            )
+
+        elif (
+            free_gb < 15
+            or free_percent < 8
+        ):
             score -= 12
-            issues.append(f"{drive['device']} is getting low on free space.")
-            actions.append(f"Consider freeing some space on {drive['device']}.")
+            issues.append(
+                f"{drive['device']} is getting low on free space."
+            )
 
     return make_result(
         "Storage Doctor",
@@ -1134,98 +1742,171 @@ def doctor_storage(data):
         facts,
         issues,
         actions,
-        "This Doctor checks free space. It does not prove whether an SSD or HDD is physically healthy.",
+        (
+            "This checks available space only. "
+            "It does not prove whether an SSD or HDD is physically healthy."
+        ),
         coverage=100,
     )
 
 
-# =========================================================
-# WINDOWS EVENT DOCTOR
-# =========================================================
+def create_event_result(
+    package
+):
+    analysis = analyze_event_logs(
+        package
+    )
 
-def create_event_result(event_scan):
-    analysis = analyze_event_logs(event_scan)
-    score = 100
-    facts = []
-    issues = []
-    actions = []
-
-    if not analysis["available"]:
+    if not analysis[
+        "available"
+    ]:
         return make_result(
             "Windows Event Doctor",
             100,
-            ["Windows Event Log data could not be read."],
             [],
-            ["Try the scan again if Windows Event Log should be available."],
-            "OpenFix did not lower the score because event data was unavailable.",
+            [],
+            [],
+            (
+                "Windows Event data could not be read. "
+                "The score was not reduced because missing data is not a fault."
+            ),
             coverage=0,
-            extra={"event_analysis": analysis},
+            extra={
+                "event_analysis": analysis,
+            },
         )
 
-    facts.extend(
-        [
-            f"Windows events checked: {analysis['total']}.",
-            f"Errors recorded: {analysis['errors']}.",
-            f"Warnings recorded: {analysis['warnings']}.",
-        ]
-    )
+    score = 100
+    facts = [
+        f"Windows events checked: {analysis['total']}.",
+        f"Errors recorded: {analysis['errors']}.",
+        f"Warnings recorded: {analysis['warnings']}.",
+    ]
+    issues = []
+    actions = []
 
-    if analysis["ignored_noise"]:
-        facts.append(f"Common background events ignored: {analysis['ignored_noise']}.")
-
-    if analysis["hardware_errors"]:
-        count = analysis["hardware_errors"]
-        score -= min(45, count * 25)
-        issues.append(f"Windows recorded {count} possible hardware error event(s).")
-        actions.append("Prioritize dedicated hardware diagnostics before changing Windows settings.")
-
-    if analysis["storage_errors"]:
-        count = analysis["storage_errors"]
-        score -= min(35, count * 15)
-        issues.append(f"Windows recorded {count} important storage-related event(s).")
-        actions.append("Back up important files and check drive health.")
-
-    if analysis["shutdown_errors"]:
-        count = analysis["shutdown_errors"]
-        score -= min(30, count * 15)
-        issues.append(f"{count} unexpected shutdown event(s) were detected.")
-        actions.append("Check recent crashes, temperatures and power stability.")
-
-    if analysis["gpu_errors"]:
-        count = analysis["gpu_errors"]
-        score -= min(25, count * 10)
-        issues.append(f"Windows recorded {count} graphics-related error event(s).")
-        actions.append("Check graphics driver stability if display problems or crashes are occurring.")
-
-    if analysis["app_crashes"]:
-        count = analysis["app_crashes"]
-        score -= min(15, count * 5)
-        issues.append(f"{count} application crash event(s) were detected.")
-        actions.append("Identify the application that crashed before reinstalling drivers or Windows.")
-
-    if analysis["generic_errors"]:
-        score -= min(5, analysis["generic_errors"])
-        facts.append(f"Other Windows errors: {analysis['generic_errors']}.")
-
-    if analysis["important"]:
-        facts.append("Important recent events:")
-        for event in analysis["important"][:5]:
-            facts.append(
-                f"[{event['category']}] {event['provider']} (Event ID {event['id']})"
-            )
-
-    serious_count = (
-        analysis["hardware_errors"]
-        + analysis["storage_errors"]
-        + analysis["shutdown_errors"]
-        + analysis["gpu_errors"]
-        + analysis["app_crashes"]
-    )
-
-    if serious_count == 0:
+    if analysis[
+        "ignored_noise"
+    ]:
         facts.append(
-            "No major hardware, storage, graphics, shutdown or application-crash event was detected."
+            f"Common background events ignored: {analysis['ignored_noise']}."
         )
+
+    if analysis[
+        "hardware_errors"
+    ]:
+        count = analysis[
+            "hardware_errors"
+        ]
+
+        score -= min(
+            45,
+            count * 25,
+        )
+
+        issues.append(
+            f"{count} possible hardware error event(s) were recorded."
+        )
+        actions.append(
+            "Use dedicated hardware diagnostics before changing Windows settings."
+        )
+
+    if analysis[
+        "storage_errors"
+    ]:
+        count = analysis[
+            "storage_errors"
+        ]
+
+        score -= min(
+            35,
+            count * 15,
+        )
+
+        issues.append(
+            f"{count} important storage-related event(s) were recorded."
+        )
+        actions.append(
+            "Back up important files and check drive health."
+        )
+
+    if analysis[
+        "shutdown_errors"
+    ]:
+        count = analysis[
+            "shutdown_errors"
+        ]
+
+        score -= min(
+            30,
+            count * 15,
+        )
+
+        issues.append(
+            f"{count} unexpected shutdown event(s) were detected."
+        )
+
+    if analysis[
+        "gpu_errors"
+    ]:
+        count = analysis[
+            "gpu_errors"
+        ]
+
+        score -= min(
+            25,
+            count * 10,
+        )
+
+        issues.append(
+            f"{count} graphics-related error event(s) were detected."
+        )
+
+    if analysis[
+        "app_crashes"
+    ]:
+        count = analysis[
+            "app_crashes"
+        ]
+
+        score -= min(
+            15,
+            count * 5,
+        )
+
+        issues.append(
+            f"{count} application crash event(s) were detected."
+        )
+
+    if analysis[
+        "generic_errors"
+    ]:
+        score -= min(
+            5,
+            analysis[
+                "generic_errors"
+            ],
+        )
+
+        facts.append(
+            f"Other Windows errors: {analysis['generic_errors']}."
+        )
+
+    if analysis[
+        "important"
+    ]:
+        facts.append(
+            "Important recent events:"
+        )
+
+        for event in analysis[
+            "important"
+        ][:5]:
+            facts.append(
+                f"[{event['category']}] "
+                f"{event['provider']} "
+                f"(Event ID {event['id']})"
+            )
 
     return make_result(
         "Windows Event Doctor",
@@ -1234,237 +1915,372 @@ def create_event_result(event_scan):
         issues,
         actions,
         (
-            "Event ID is Windows' reference number for an event. Windows can contain harmless warnings "
-            "and errors even on healthy PCs."
+            "Windows can contain harmless warnings and errors even when the PC is working normally."
         ),
         coverage=100,
-        extra={"event_analysis": analysis},
+        extra={
+            "event_analysis": analysis,
+        },
     )
 
 
-def doctor_event_log():
-    return create_event_result(scan_event_logs())
-
-
 # =========================================================
-# LOCAL SMART DOCTOR
+# SMART DOCTOR
 # =========================================================
 
-def doctor_smart(data, event_analysis):
+def doctor_smart(
+    data,
+    event_analysis,
+):
     score = 100
+
     facts = []
     issues = []
-    recommendations = []
+    recommended = []
 
-    def add_action(priority, text):
-        recommendations.append((priority, text))
+    def action(
+        priority,
+        text,
+    ):
+        recommended.append(
+            (
+                priority,
+                text,
+            )
+        )
 
     cpu = data["cpu"]
     memory = data["memory"]
     ram = memory["percent"]
-    network = data["network"]
     gpu = data["gpu"]
-    disks = data["disks"]
-
-    coverage = coverage_percent(
-        [
-            cpu is not None,
-            ram is not None,
-            bool(disks),
-            network["ping_test_available"],
-            gpu["available"],
-            event_analysis["available"],
-        ]
-    )
-
-    high_cpu = cpu is not None and cpu >= 85
-    high_ram = ram is not None and ram >= 85
-    very_high_ram = ram is not None and ram >= 95
-    high_gpu_temp = gpu["temperature"] is not None and gpu["temperature"] >= 83
-    critical_gpu_temp = gpu["temperature"] is not None and gpu["temperature"] >= 90
-    low_storage = False
-    critical_storage = False
+    network = data["network"]
 
     # CPU
     if cpu is not None:
-        facts.append(f"CPU usage: {cpu:.0f}%.")
+        facts.append(
+            f"CPU usage: {cpu:.0f}%."
+        )
+
         if cpu >= 95:
             score -= 20
-            issues.append("CPU usage is extremely high.")
-            add_action(2, "Check which application is using the most CPU.")
+            issues.append(
+                "CPU usage is extremely high."
+            )
+            action(
+                2,
+                "Check which application is using the most CPU.",
+            )
+
         elif cpu >= 85:
             score -= 10
-            issues.append("CPU usage is high.")
-    else:
-        facts.append("CPU usage is not available.")
+            issues.append(
+                "CPU usage is high."
+            )
 
-    # RAM
+    # RAM / process correlation
     if ram is not None:
-        facts.append(f"RAM usage: {ram:.0f}%.")
+        facts.append(
+            f"RAM usage: {ram:.0f}%."
+        )
+
         if ram >= 95:
             score -= 25
-            issues.append("RAM usage is extremely high.")
-            add_action(2, "Close unnecessary applications and check which program uses the most RAM.")
+            issues.append(
+                "RAM usage is extremely high."
+            )
+
         elif ram >= 85:
             score -= 12
-            issues.append("RAM usage is high.")
-    else:
-        facts.append("RAM usage is not available.")
+            issues.append(
+                "RAM usage is high."
+            )
 
-    # Top process correlation
-    if data["processes"]:
-        top = data["processes"][0]
-        facts.append(f"Highest RAM usage: {top['name']} ({format_bytes(top['memory'])}).")
+    if (
+        data["processes"]
+        and memory["total"]
+    ):
+        top = data[
+            "processes"
+        ][0]
 
-        if high_ram and memory["total"]:
-            share = top["memory"] / memory["total"]
-            if share >= 0.15:
-                add_action(
-                    1,
-                    f"Check {top['name']} first because it is using a large share of system RAM.",
-                )
+        percent = (
+            top["memory"]
+            / memory["total"]
+            * 100
+        )
 
-    # GPU
-    if gpu["available"]:
-        facts.append(f"Main graphics device: {gpu['name']}.")
-        if gpu["gpu_count"] > 1:
-            facts.append(f"{gpu['gpu_count']} graphics devices were detected.")
-    else:
-        facts.append("Graphics device information is not available.")
+        facts.append(
+            f"Highest RAM usage: "
+            f"{top['name']} — "
+            f"{format_bytes(top['memory'])} "
+            f"({percent:.1f}% of installed RAM)."
+        )
 
-    if gpu["temperature"] is not None:
-        temperature = gpu["temperature"]
-        facts.append(f"GPU temperature: {temperature:.0f}°C.")
-
-        if temperature >= 90:
-            score -= 25
-            issues.append("GPU temperature is dangerously high.")
-            add_action(0, "Check GPU cooling, fans and case airflow before performance tuning.")
-        elif temperature >= 83:
-            score -= 10
-            issues.append("GPU temperature is higher than ideal.")
-            add_action(3, "Check case airflow and GPU cooling.")
+        if (
+            ram is not None
+            and ram >= 85
+            and percent >= 15
+        ):
+            action(
+                0,
+                f"Check {top['name']} first because it is using a large share of RAM.",
+            )
 
     # Storage
-    for drive in disks:
-        free_gb = drive["free"] / (1024 ** 3)
-        free_percent = 100 - drive["percent"]
-        facts.append(f"{drive['device']} has {free_gb:.1f} GB free.")
+    low_storage = False
+    critical_storage = False
 
-        if free_gb < 5 or free_percent < 3:
+    for drive in data[
+        "disks"
+    ]:
+        free_gb = (
+            drive["free"]
+            / (1024 ** 3)
+        )
+
+        free_percent = (
+            100
+            - drive["percent"]
+        )
+
+        if (
+            free_gb < 5
+            or free_percent < 3
+        ):
+            low_storage = True
             critical_storage = True
-            low_storage = True
+
             score -= 25
-            issues.append(f"{drive['device']} is critically low on free space.")
-            add_action(1, f"Free space on {drive['device']} before doing other software troubleshooting.")
-        elif free_gb < 15 or free_percent < 8:
+
+            issues.append(
+                f"{drive['device']} is critically low on free space."
+            )
+
+        elif (
+            free_gb < 15
+            or free_percent < 8
+        ):
             low_storage = True
+
             score -= 10
-            issues.append(f"{drive['device']} is getting low on free space.")
-            add_action(3, f"Consider freeing space on {drive['device']}.")
 
-    # Network
-    if network["ping_test_available"]:
-        if network["internet"]:
-            facts.append("Internet connection is reachable.")
-        else:
-            score -= 30
-            issues.append("OpenFix could not reach the internet.")
-            add_action(1, "Check the router, Wi-Fi or Ethernet connection.")
-    else:
-        facts.append("Internet reachability test is not available.")
+            issues.append(
+                f"{drive['device']} is getting low on free space."
+            )
 
-    ping = network["ping"]
-    loss = network["packet_loss"]
+    # Network correlation
+    ping = network[
+        "ping"
+    ]
+
+    loss = network[
+        "packet_loss"
+    ]
 
     if ping is not None:
-        facts.append(f"Internet response time: {ping} ms.")
+        facts.append(
+            f"Internet response time: {ping} ms."
+        )
+
     if loss is not None:
-        facts.append(f"Packet loss: {loss}%.")
+        facts.append(
+            f"Packet loss: {loss}%."
+        )
 
-    if loss is not None and loss >= 3 and ping is not None and ping < 80:
+    if (
+        loss is not None
+        and loss >= 3
+        and ping is not None
+        and ping < 80
+    ):
         score -= 18
-        issues.append("Internet response speed looks normal, but the connection appears unstable.")
-        add_action(2, "Check Wi-Fi signal, Ethernet cable and router stability.")
-    elif loss is not None and loss >= 3:
+
+        issues.append(
+            "Internet response speed is good, but the connection appears unstable."
+        )
+
+        action(
+            1,
+            "Check Wi-Fi signal, Ethernet cable and router stability.",
+        )
+
+    elif (
+        loss is not None
+        and loss >= 3
+    ):
         score -= 18
-        issues.append("Packet loss may be causing an unstable connection.")
-        add_action(2, "Check the local network connection.")
-    elif ping is not None and ping >= 150:
+
+        issues.append(
+            "Packet loss may be causing an unstable internet connection."
+        )
+
+    elif (
+        ping is not None
+        and ping >= 150
+    ):
         score -= 15
-        issues.append("Internet response time is very high.")
-        add_action(3, "Check network traffic, Wi-Fi quality and ISP conditions.")
 
-    # Windows Events
-    if event_analysis["available"]:
-        if event_analysis["hardware_errors"]:
-            score -= 30
-            issues.append("Windows recorded possible hardware errors.")
-            add_action(0, "Run dedicated hardware diagnostics before changing Windows settings.")
+        issues.append(
+            "Internet response time is very high."
+        )
 
-        if event_analysis["storage_errors"]:
+    # GPU
+    hot_gpu = False
+
+    if gpu[
+        "temperature"
+    ] is not None:
+        temperature = gpu[
+            "temperature"
+        ]
+
+        facts.append(
+            f"GPU temperature: {temperature:.0f}°C."
+        )
+
+        if temperature >= 90:
+            hot_gpu = True
+
             score -= 25
-            issues.append("Windows recorded important storage-related errors.")
-            add_action(0, "Back up important files and check drive health.")
 
-        if event_analysis["shutdown_errors"]:
-            score -= 20
-            issues.append("Unexpected shutdowns were recorded.")
-            add_action(1, "Check temperatures, power stability and recent crash history.")
+            issues.append(
+                "GPU temperature is dangerously high."
+            )
 
-        if event_analysis["gpu_errors"]:
-            score -= 15
-            issues.append("Windows recorded graphics-related errors.")
-            add_action(2, "Check graphics driver stability.")
+            action(
+                0,
+                "Check GPU cooling, fans and case airflow.",
+            )
 
-        if event_analysis["app_crashes"]:
-            score -= 8
-            issues.append("Application crashes were recorded.")
-            add_action(4, "Identify which application crashed before reinstalling drivers or Windows.")
-    else:
-        facts.append("Windows Event Log analysis is not available for this scan.")
+        elif temperature >= 83:
+            hot_gpu = True
 
-    # Correlations: these do not add new penalties, they improve priority/explanation.
-    if low_storage and not high_cpu and not high_ram:
-        add_action(2, "Storage space is currently a more likely concern than CPU or RAM usage.")
+            score -= 10
 
-    if high_ram and not high_cpu:
-        add_action(2, "Memory pressure is more noticeable than CPU load in this scan.")
+            issues.append(
+                "GPU temperature is higher than ideal."
+            )
 
-    if high_cpu and high_ram:
-        add_action(1, "CPU and RAM are both under heavy load, so check active applications before changing drivers or Windows.")
+    # Events
+    storage_event = (
+        event_analysis[
+            "storage_errors"
+        ] > 0
+    )
 
-    if event_analysis["available"] and event_analysis["storage_errors"] and critical_storage:
-        add_action(0, "Storage errors and very low free space appeared together: back up important files first.")
+    gpu_event = (
+        event_analysis[
+            "gpu_errors"
+        ] > 0
+    )
 
-    if event_analysis["available"] and event_analysis["gpu_errors"] and high_gpu_temp:
-        add_action(0, "Graphics errors and high GPU temperature appeared together: check cooling before reinstalling drivers.")
+    if event_analysis[
+        "hardware_errors"
+    ]:
+        score -= 30
 
-    if event_analysis["available"] and event_analysis["shutdown_errors"] and critical_gpu_temp:
-        add_action(0, "Unexpected shutdowns and very high GPU temperature appeared together: check cooling and power stability first.")
+        issues.append(
+            "Windows recorded possible hardware errors."
+        )
 
-    if very_high_ram and data["processes"]:
-        top = data["processes"][0]
-        add_action(1, f"RAM is nearly full. Review {top['name']} before restarting or changing system settings.")
+        action(
+            0,
+            "Run dedicated hardware diagnostics before changing Windows settings.",
+        )
 
-    # Deduplicate and label priority.
-    unique = []
-    seen = set()
-    for priority, text in sorted(recommendations, key=lambda item: item[0]):
-        if text in seen:
-            continue
-        seen.add(text)
-        unique.append((priority, text))
+    if storage_event:
+        score -= 25
 
-    actions = []
-    for index, (priority, text) in enumerate(unique[:7], start=1):
-        if index == 1:
-            prefix = "Do first"
-        elif index <= 3:
-            prefix = "Next"
+        issues.append(
+            "Windows recorded important storage-related errors."
+        )
+
+        if low_storage:
+            action(
+                0,
+                "Back up important files first because storage errors and low free space were detected together.",
+            )
         else:
-            prefix = "Then"
-        actions.append(f"{prefix}: {text}")
+            action(
+                0,
+                "Back up important files and check drive health.",
+            )
+
+    if event_analysis[
+        "shutdown_errors"
+    ]:
+        score -= 20
+
+        issues.append(
+            "Unexpected shutdowns were recorded."
+        )
+
+        action(
+            1,
+            "Check temperatures, power stability and recent crash history.",
+        )
+
+    if gpu_event:
+        score -= 15
+
+        issues.append(
+            "Windows recorded graphics-related errors."
+        )
+
+        if hot_gpu:
+            action(
+                0,
+                "Check GPU cooling first because graphics errors and high temperature were detected together.",
+            )
+        else:
+            action(
+                2,
+                "Check graphics driver stability.",
+            )
+
+    if event_analysis[
+        "app_crashes"
+    ]:
+        score -= 8
+
+        issues.append(
+            "Application crashes were recorded."
+        )
+
+        action(
+            4,
+            "Identify which application crashed before reinstalling drivers or Windows.",
+        )
+
+    if (
+        low_storage
+        and cpu is not None
+        and cpu < 70
+        and ram is not None
+        and ram < 80
+    ):
+        action(
+            2,
+            "Storage space is currently a more likely concern than CPU or RAM usage.",
+        )
+
+    if (
+        critical_storage
+        and not storage_event
+    ):
+        action(
+            1,
+            "Free space on the nearly-full drive.",
+        )
+
+    actions = format_prioritized_actions(
+        recommended
+    )
+
+    coverage = calculate_coverage(
+        data,
+        event_analysis,
+    )
 
     return make_result(
         "Local Smart Doctor",
@@ -1472,121 +2288,251 @@ def doctor_smart(data, event_analysis):
         facts,
         issues,
         actions,
-        "Smart Doctor uses built-in local rules. It does not use Cloud AI or an external AI API.",
+        (
+            "Smart Doctor uses built-in local diagnostic rules. "
+            "No Cloud AI or external AI API is used."
+        ),
         coverage=coverage,
     )
 
 
 # =========================================================
-# FULL SYSTEM SCAN
+# FULL SCAN
 # =========================================================
 
-def doctor_full(data, event_scan):
-    event_result = create_event_result(event_scan)
-    event_analysis = event_result["event_analysis"]
+def doctor_full(
+    data,
+    event_package,
+):
+    event_result = (
+        create_event_result(
+            event_package
+        )
+    )
 
-    internet = doctor_internet(data)
-    gaming = doctor_gaming(data)
-    slow = doctor_slow_pc(data)
-    storage = doctor_storage(data)
-    smart = doctor_smart(data, event_analysis)
+    event_analysis = (
+        event_result[
+            "event_analysis"
+        ]
+    )
 
-    areas = [
-        (internet, 0.20),
-        (gaming, 0.15),
-        (slow, 0.15),
-        (storage, 0.20),
-        (event_result, 0.30),
+    internet = doctor_internet(
+        data
+    )
+    gaming = doctor_gaming(
+        data
+    )
+    slow = doctor_slow_pc(
+        data
+    )
+    storage = doctor_storage(
+        data
+    )
+    smart = doctor_smart(
+        data,
+        event_analysis,
+    )
+
+    independent = [
+        (
+            internet["score"],
+            0.20,
+            internet["coverage"],
+        ),
+        (
+            gaming["score"],
+            0.15,
+            gaming["coverage"],
+        ),
+        (
+            slow["score"],
+            0.15,
+            slow["coverage"],
+        ),
+        (
+            storage["score"],
+            0.20,
+            storage["coverage"],
+        ),
+        (
+            event_result["score"],
+            0.30,
+            event_result["coverage"],
+        ),
     ]
 
-    numerator = 0.0
-    denominator = 0.0
-    for result, base_weight in areas:
-        availability = result["coverage"] / 100
-        effective_weight = base_weight * availability
-        if effective_weight <= 0:
-            continue
-        numerator += result["score"] * effective_weight
-        denominator += effective_weight
+    weighted_total = 0
+    weight_total = 0
 
-    overall_score = round(numerator / denominator) if denominator > 0 else 100
+    for score, weight, coverage in independent:
+        if (
+            coverage is not None
+            and coverage > 0
+        ):
+            weighted_total += (
+                score * weight
+            )
+            weight_total += weight
 
-    overall_coverage = round(
-        sum(result["coverage"] * weight for result, weight in areas)
-        / sum(weight for _, weight in areas)
+    if weight_total > 0:
+        overall = round(
+            weighted_total
+            / weight_total
+        )
+    else:
+        overall = 100
+
+    coverage = calculate_coverage(
+        data,
+        event_analysis,
+    )
+
+    doctor_scores = {
+        "Internet": internet["score"],
+        "Gaming": gaming["score"],
+        "Slow PC": slow["score"],
+        "Storage": storage["score"],
+        "Windows Events": event_result["score"],
+    }
+
+    healthy = sum(
+        1
+        for score in doctor_scores.values()
+        if score >= 90
+    )
+
+    attention = sum(
+        1
+        for score in doctor_scores.values()
+        if score < 90
     )
 
     facts = [
-        f"Internet Doctor: {internet['score']}/100 — coverage {internet['coverage']}%.",
-        f"Gaming Doctor: {gaming['score']}/100 — coverage {gaming['coverage']}%.",
-        f"Slow PC Doctor: {slow['score']}/100 — coverage {slow['coverage']}%.",
-        f"Storage Doctor: {storage['score']}/100 — coverage {storage['coverage']}%.",
-        f"Windows Event Doctor: {event_result['score']}/100 — coverage {event_result['coverage']}%.",
-        f"Local Smart Doctor: {smart['score']}/100 — coverage {smart['coverage']}%.",
+        f"Internet Doctor: {internet['score']}/100.",
+        f"Gaming Doctor: {gaming['score']}/100.",
+        f"Slow PC Doctor: {slow['score']}/100.",
+        f"Storage Doctor: {storage['score']}/100.",
+        f"Windows Event Doctor: {event_result['score']}/100.",
+        f"Local Smart Doctor: {smart['score']}/100.",
+        f"Scan coverage: {coverage}%.",
     ]
-
-    issues = list(smart["issues"][:5])
-    actions = list(smart["actions"][:6])
-
-    if overall_coverage < 100:
-        facts.append(
-            f"This was a partial scan: {overall_coverage}% of the planned diagnostic data was available."
-        )
 
     return make_result(
         "Full System Scan",
-        overall_score,
+        overall,
         facts,
-        issues,
-        actions,
+        smart["issues"][:5],
+        smart["actions"][:6],
         (
-            "Overall score uses only diagnostic areas that returned usable data. "
-            "Unavailable data does not automatically lower the health score."
+            "The overall score uses independent diagnostic areas. "
+            "Missing information is not treated as a hardware fault."
         ),
-        coverage=overall_coverage,
+        coverage=coverage,
         extra={
             "dashboard_data": data,
             "event_analysis": event_analysis,
+            "healthy_areas": healthy,
+            "attention_areas": attention,
+            "smart_score": smart["score"],
         },
     )
 
 
 # =========================================================
-# WORKER THREAD
+# WORKER
 # =========================================================
 
 class ScanWorker(QThread):
+
     finished = Signal(dict)
 
-    def __init__(self, mode):
+    def __init__(
+        self,
+        mode,
+    ):
         super().__init__()
+
         self.mode = mode
 
     def run(self):
         try:
             if self.mode == "events":
-                self.finished.emit(doctor_event_log())
+                package = (
+                    scan_event_logs()
+                )
+
+                self.finished.emit(
+                    create_event_result(
+                        package
+                    )
+                )
                 return
 
-            data = collect_system_data()
+            data = (
+                collect_system_data()
+            )
 
             if self.mode == "internet":
-                result = doctor_internet(data)
-            elif self.mode == "gaming":
-                result = doctor_gaming(data)
-            elif self.mode == "slow":
-                result = doctor_slow_pc(data)
-            elif self.mode == "storage":
-                result = doctor_storage(data)
-            elif self.mode == "smart":
-                event_scan = scan_event_logs()
-                analysis = analyze_event_logs(event_scan)
-                result = doctor_smart(data, analysis)
-            else:
-                event_scan = scan_event_logs()
-                result = doctor_full(data, event_scan)
+                result = (
+                    doctor_internet(
+                        data
+                    )
+                )
 
-            self.finished.emit(result)
+            elif self.mode == "gaming":
+                result = (
+                    doctor_gaming(
+                        data
+                    )
+                )
+
+            elif self.mode == "slow":
+                result = (
+                    doctor_slow_pc(
+                        data
+                    )
+                )
+
+            elif self.mode == "storage":
+                result = (
+                    doctor_storage(
+                        data
+                    )
+                )
+
+            elif self.mode == "smart":
+                package = (
+                    scan_event_logs()
+                )
+
+                analysis = (
+                    analyze_event_logs(
+                        package
+                    )
+                )
+
+                result = (
+                    doctor_smart(
+                        data,
+                        analysis,
+                    )
+                )
+
+            else:
+                package = (
+                    scan_event_logs()
+                )
+
+                result = (
+                    doctor_full(
+                        data,
+                        package,
+                    )
+                )
+
+            self.finished.emit(
+                result
+            )
 
         except Exception as error:
             self.finished.emit(
@@ -1595,337 +2541,1149 @@ class ScanWorker(QThread):
                     100,
                     [],
                     [],
-                    ["Try the scan again. If the problem continues, restart OpenFix and test the same Doctor again."],
-                    f"Internal scan error: {error}",
+                    [],
+                    (
+                        "The scan could not finish normally. "
+                        f"Internal error: {error}"
+                    ),
                     coverage=0,
                 )
             )
 
 
 # =========================================================
-# UI COMPONENTS
+# MODERN DIALOG
+# =========================================================
+
+class ModernDialog(QDialog):
+
+    def __init__(
+        self,
+        parent,
+        title,
+        subtitle,
+        sections,
+        warning=False,
+    ):
+        super().__init__(
+            parent
+        )
+
+        self.setModal(
+            True
+        )
+
+        self.resize(
+            720,
+            600,
+        )
+
+        self.setMinimumSize(
+            620,
+            480,
+        )
+
+        self.setWindowTitle(
+            title
+        )
+
+        root = QVBoxLayout(
+            self
+        )
+
+        root.setContentsMargins(
+            24,
+            22,
+            24,
+            22,
+        )
+
+        root.setSpacing(
+            16
+        )
+
+        top = QHBoxLayout()
+
+        title_box = QVBoxLayout()
+
+        heading = QLabel(
+            title
+        )
+        heading.setObjectName(
+            "DialogTitle"
+        )
+
+        description = QLabel(
+            subtitle
+        )
+        description.setObjectName(
+            "DialogSubtitle"
+        )
+        description.setWordWrap(
+            True
+        )
+
+        title_box.addWidget(
+            heading
+        )
+        title_box.addWidget(
+            description
+        )
+
+        top.addLayout(
+            title_box,
+            1,
+        )
+
+        close_x = QPushButton(
+            "×"
+        )
+        close_x.setObjectName(
+            "DialogCloseX"
+        )
+        close_x.setFixedSize(
+            36,
+            36,
+        )
+        close_x.clicked.connect(
+            self.accept
+        )
+
+        top.addWidget(
+            close_x
+        )
+
+        root.addLayout(
+            top
+        )
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(
+            True
+        )
+        scroll.setFrameShape(
+            QFrame.NoFrame
+        )
+
+        container = QWidget()
+        content = QVBoxLayout(
+            container
+        )
+        content.setContentsMargins(
+            0,
+            0,
+            6,
+            0,
+        )
+        content.setSpacing(
+            10
+        )
+
+        for section_title, text in sections:
+            card = QFrame()
+
+            card.setObjectName(
+                (
+                    "DialogWarningCard"
+                    if warning
+                    else "DialogCard"
+                )
+            )
+
+            card_layout = QVBoxLayout(
+                card
+            )
+            card_layout.setContentsMargins(
+                16,
+                14,
+                16,
+                14,
+            )
+
+            card_title = QLabel(
+                section_title
+            )
+            card_title.setObjectName(
+                "DialogCardTitle"
+            )
+
+            card_text = QLabel(
+                text
+            )
+            card_text.setObjectName(
+                "DialogCardText"
+            )
+            card_text.setWordWrap(
+                True
+            )
+
+            card_layout.addWidget(
+                card_title
+            )
+            card_layout.addWidget(
+                card_text
+            )
+
+            content.addWidget(
+                card
+            )
+
+        content.addStretch()
+
+        scroll.setWidget(
+            container
+        )
+
+        root.addWidget(
+            scroll,
+            1,
+        )
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+
+        close_button = QPushButton(
+            "Close"
+        )
+        close_button.setObjectName(
+            "DialogCloseButton"
+        )
+        close_button.setMinimumWidth(
+            110
+        )
+        close_button.clicked.connect(
+            self.accept
+        )
+
+        footer.addWidget(
+            close_button
+        )
+
+        root.addLayout(
+            footer
+        )
+
+
+# =========================================================
+# COLLAPSIBLE SECTION
+# =========================================================
+
+class CollapsibleSection(QFrame):
+
+    def __init__(
+        self,
+        title,
+        subtitle,
+        expanded=False,
+    ):
+        super().__init__()
+
+        self.setObjectName(
+            "CollapsibleSection"
+        )
+
+        self.expanded = expanded
+
+        root = QVBoxLayout(
+            self
+        )
+        root.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+        root.setSpacing(
+            0
+        )
+
+        header = QFrame()
+        header.setObjectName(
+            "CollapsibleHeader"
+        )
+
+        header_layout = QHBoxLayout(
+            header
+        )
+        header_layout.setContentsMargins(
+            16,
+            13,
+            12,
+            13,
+        )
+
+        labels = QVBoxLayout()
+        labels.setSpacing(
+            2
+        )
+
+        self.title_label = QLabel(
+            title
+        )
+        self.title_label.setObjectName(
+            "CollapsibleTitle"
+        )
+
+        self.subtitle_label = QLabel(
+            subtitle
+        )
+        self.subtitle_label.setObjectName(
+            "CollapsibleSubtitle"
+        )
+
+        labels.addWidget(
+            self.title_label
+        )
+        labels.addWidget(
+            self.subtitle_label
+        )
+
+        header_layout.addLayout(
+            labels,
+            1,
+        )
+
+        self.toggle_button = QPushButton()
+        self.toggle_button.setObjectName(
+            "CollapseToggle"
+        )
+        self.toggle_button.setFixedSize(
+            38,
+            38,
+        )
+        self.toggle_button.setCursor(
+            Qt.PointingHandCursor
+        )
+
+        self.toggle_button.clicked.connect(
+            self.toggle
+        )
+
+        header_layout.addWidget(
+            self.toggle_button
+        )
+
+        root.addWidget(
+            header
+        )
+
+        self.content_frame = QFrame()
+        self.content_frame.setObjectName(
+            "CollapsibleContent"
+        )
+
+        self.content_layout = QVBoxLayout(
+            self.content_frame
+        )
+        self.content_layout.setContentsMargins(
+            14,
+            14,
+            14,
+            14,
+        )
+
+        root.addWidget(
+            self.content_frame
+        )
+
+        self.set_expanded(
+            expanded
+        )
+
+
+    def add_widget(
+        self,
+        widget,
+    ):
+        self.content_layout.addWidget(
+            widget
+        )
+
+
+    def add_layout(
+        self,
+        layout,
+    ):
+        self.content_layout.addLayout(
+            layout
+        )
+
+
+    def toggle(self):
+        self.set_expanded(
+            not self.expanded
+        )
+
+
+    def set_expanded(
+        self,
+        expanded,
+    ):
+        self.expanded = expanded
+
+        self.content_frame.setVisible(
+            expanded
+        )
+
+        if expanded:
+            self.toggle_button.setText(
+                "−"
+            )
+            self.toggle_button.setToolTip(
+                "Collapse section"
+            )
+        else:
+            self.toggle_button.setText(
+                "+"
+            )
+            self.toggle_button.setToolTip(
+                "Expand section"
+            )
+
+
+# =========================================================
+# UI CARDS
 # =========================================================
 
 class NavButton(QPushButton):
-    def __init__(self, text):
-        super().__init__(text)
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(44)
+
+    def __init__(
+        self,
+        text,
+    ):
+        super().__init__(
+            text
+        )
+
+        self.setCheckable(
+            True
+        )
+        self.setCursor(
+            Qt.PointingHandCursor
+        )
+        self.setMinimumHeight(
+            44
+        )
 
 
 class StatCard(QFrame):
-    def __init__(self, title, value="--", subtitle="Waiting for scan"):
-        super().__init__()
-        self.setObjectName("StatCard")
-        self.setProperty("state", "neutral")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 15, 18, 16)
-        layout.setSpacing(6)
+    def __init__(
+        self,
+        title,
+    ):
+        super().__init__()
+
+        self.setObjectName(
+            "StatCard"
+        )
+
+        self.state = "neutral"
+
+        root = QVBoxLayout(
+            self
+        )
+        root.setContentsMargins(
+            18,
+            15,
+            18,
+            15,
+        )
+        root.setSpacing(
+            7
+        )
 
         top = QHBoxLayout()
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("StatTitle")
 
-        self.status_label = QLabel("WAITING")
-        self.status_label.setObjectName("StatStatus")
-        self.status_label.setProperty("state", "neutral")
+        self.title = QLabel(
+            title
+        )
+        self.title.setObjectName(
+            "StatTitle"
+        )
 
-        top.addWidget(self.title_label)
+        self.badge = QLabel(
+            "WAITING"
+        )
+        self.badge.setObjectName(
+            "StatBadge"
+        )
+
+        top.addWidget(
+            self.title
+        )
         top.addStretch()
-        top.addWidget(self.status_label)
+        top.addWidget(
+            self.badge
+        )
 
-        self.value_label = QLabel(value)
-        self.value_label.setObjectName("StatValue")
-        self.value_label.setWordWrap(True)
+        self.value = QLabel(
+            "--"
+        )
+        self.value.setObjectName(
+            "StatValue"
+        )
+        self.value.setWordWrap(
+            True
+        )
 
-        self.subtitle_label = QLabel(subtitle)
-        self.subtitle_label.setObjectName("StatSubtitle")
-        self.subtitle_label.setWordWrap(True)
+        self.subtitle = QLabel(
+            "Waiting for scan"
+        )
+        self.subtitle.setObjectName(
+            "StatSubtitle"
+        )
+        self.subtitle.setWordWrap(
+            True
+        )
 
-        layout.addLayout(top)
-        layout.addWidget(self.value_label)
-        layout.addWidget(self.subtitle_label)
+        root.addLayout(
+            top
+        )
+        root.addWidget(
+            self.value
+        )
+        root.addWidget(
+            self.subtitle
+        )
 
-    def set_state(self, state, status_text):
-        self.setProperty("state", state)
-        self.status_label.setProperty("state", state)
-        self.status_label.setText(status_text.upper())
 
-        for widget in (self, self.status_label):
-            widget.style().unpolish(widget)
-            widget.style().polish(widget)
+    def set_status(
+        self,
+        value,
+        subtitle,
+        badge,
+        state,
+    ):
+        self.value.setText(
+            value
+        )
+        self.subtitle.setText(
+            subtitle
+        )
+        self.badge.setText(
+            badge
+        )
 
-    def set_value(self, value, subtitle, state="neutral", status_text="Info"):
-        self.value_label.setText(value)
-        self.subtitle_label.setText(subtitle)
-        self.set_state(state, status_text)
+        self.setProperty(
+            "state",
+            state,
+        )
+
+        self.badge.setProperty(
+            "state",
+            state,
+        )
+
+        self.style().unpolish(
+            self
+        )
+        self.style().polish(
+            self
+        )
+
+        self.badge.style().unpolish(
+            self.badge
+        )
+        self.badge.style().polish(
+            self.badge
+        )
 
 
 class InfoValueCard(QFrame):
-    def __init__(self, title, value="Not scanned yet"):
+
+    def __init__(
+        self,
+        title,
+    ):
         super().__init__()
-        self.setObjectName("InfoValueCard")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(5)
+        self.setObjectName(
+            "InfoValueCard"
+        )
 
-        title_label = QLabel(title)
-        title_label.setObjectName("InfoValueTitle")
+        layout = QVBoxLayout(
+            self
+        )
+        layout.setContentsMargins(
+            15,
+            13,
+            15,
+            13,
+        )
 
-        self.value_label = QLabel(value)
-        self.value_label.setObjectName("InfoValueText")
-        self.value_label.setWordWrap(True)
+        heading = QLabel(
+            title
+        )
+        heading.setObjectName(
+            "InfoValueTitle"
+        )
 
-        layout.addWidget(title_label)
-        layout.addWidget(self.value_label)
+        self.value = QLabel(
+            "Not scanned yet"
+        )
+        self.value.setObjectName(
+            "InfoValueText"
+        )
+        self.value.setWordWrap(
+            True
+        )
 
-    def set_value(self, value):
-        self.value_label.setText(value)
+        layout.addWidget(
+            heading
+        )
+        layout.addWidget(
+            self.value
+        )
+
+
+    def set_value(
+        self,
+        value,
+    ):
+        self.value.setText(
+            value
+        )
 
 
 class SectionCard(QFrame):
-    def __init__(self, title):
+
+    def __init__(
+        self,
+        title,
+    ):
         super().__init__()
-        self.setObjectName("SectionCard")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
+        self.setObjectName(
+            "SectionCard"
+        )
 
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("SectionTitle")
+        layout = QVBoxLayout(
+            self
+        )
+        layout.setContentsMargins(
+            17,
+            15,
+            17,
+            15,
+        )
 
-        self.text_label = QLabel("")
-        self.text_label.setObjectName("SectionText")
-        self.text_label.setWordWrap(True)
-        self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        heading = QLabel(
+            title
+        )
+        heading.setObjectName(
+            "SectionTitle"
+        )
 
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.text_label)
+        self.text = QLabel(
+            ""
+        )
+        self.text.setObjectName(
+            "SectionText"
+        )
+        self.text.setWordWrap(
+            True
+        )
+        self.text.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
 
-    def set_lines(self, lines, empty_text):
+        layout.addWidget(
+            heading
+        )
+        layout.addWidget(
+            self.text
+        )
+
+
+    def set_lines(
+        self,
+        lines,
+        empty_text,
+    ):
         if not lines:
-            self.text_label.setText(empty_text)
+            self.text.setText(
+                empty_text
+            )
             return
 
-        self.text_label.setText("\n".join(f"• {line}" for line in lines))
+        self.text.setText(
+            "\n".join(
+                f"• {line}"
+                for line in lines
+            )
+        )
 
 
 class SummaryBanner(QFrame):
+
     def __init__(self):
         super().__init__()
-        self.setObjectName("SummaryBanner")
-        self.setProperty("state", "neutral")
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 17, 20, 17)
-
-        left = QVBoxLayout()
-        self.title = QLabel("System Health")
-        self.title.setObjectName("SummaryTitle")
-
-        self.text = QLabel("Run a Full System Scan to see your PC health summary.")
-        self.text.setObjectName("SummaryText")
-        self.text.setWordWrap(True)
-
-        self.coverage = QLabel("SCAN COVERAGE —")
-        self.coverage.setObjectName("CoverageText")
-
-        left.addWidget(self.title)
-        left.addWidget(self.text)
-        left.addWidget(self.coverage)
-        layout.addLayout(left, 1)
-
-        self.score = QLabel("--")
-        self.score.setObjectName("SummaryScore")
-        layout.addWidget(self.score)
-
-    def set_state(self, state):
-        self.setProperty("state", state)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def update_summary(self, result):
-        score = result["score"]
-        issues = result.get("issues", [])
-        coverage = result.get("coverage", 100)
-
-        self.score.setText(str(score))
-        self.coverage.setText(f"SCAN COVERAGE {coverage}%")
-
-        if score >= 90:
-            state = "good"
-            status = "System looks healthy"
-        elif score >= 75:
-            state = "minor"
-            status = "Minor items found"
-        elif score >= 50:
-            state = "warning"
-            status = "Needs attention"
-        else:
-            state = "danger"
-            status = "Important issues found"
-
-        detail = (
-            f"{len(issues)} item(s) worth checking."
-            if issues
-            else "No major problem was detected."
+        self.setObjectName(
+            "SummaryBanner"
         )
 
-        if coverage < 100:
-            detail += " Some diagnostic data was unavailable."
+        root = QHBoxLayout(
+            self
+        )
+        root.setContentsMargins(
+            20,
+            16,
+            20,
+            16,
+        )
 
-        self.text.setText(f"{status} • {detail}")
-        self.set_state(state)
+        left = QVBoxLayout()
+
+        title = QLabel(
+            "System Health"
+        )
+        title.setObjectName(
+            "SummaryTitle"
+        )
+
+        self.text = QLabel(
+            "Run a Full System Scan to check this PC."
+        )
+        self.text.setObjectName(
+            "SummaryText"
+        )
+        self.text.setWordWrap(
+            True
+        )
+
+        self.meta = QLabel(
+            "SCAN COVERAGE --  •  LAST SCAN NEVER"
+        )
+        self.meta.setObjectName(
+            "SummaryMeta"
+        )
+
+        left.addWidget(
+            title
+        )
+        left.addWidget(
+            self.text
+        )
+        left.addWidget(
+            self.meta
+        )
+
+        root.addLayout(
+            left,
+            1,
+        )
+
+        self.score = QLabel(
+            "--"
+        )
+        self.score.setObjectName(
+            "SummaryScore"
+        )
+
+        root.addWidget(
+            self.score
+        )
+
+
+    def update_summary(
+        self,
+        result,
+    ):
+        score = result[
+            "score"
+        ]
+
+        coverage = result.get(
+            "coverage"
+        )
+
+        healthy = result.get(
+            "healthy_areas",
+            0,
+        )
+
+        attention = result.get(
+            "attention_areas",
+            0,
+        )
+
+        self.score.setText(
+            str(score)
+        )
+
+        if score >= 90:
+            headline = (
+                "System looks healthy"
+            )
+        elif score >= 75:
+            headline = (
+                "Minor items are worth checking"
+            )
+        elif score >= 50:
+            headline = (
+                "Some areas need attention"
+            )
+        else:
+            headline = (
+                "Important issues were detected"
+            )
+
+        self.text.setText(
+            f"{headline} • "
+            f"{healthy} area(s) healthy • "
+            f"{attention} area(s) to check"
+        )
+
+        coverage_text = (
+            f"{coverage}%"
+            if coverage is not None
+            else "N/A"
+        )
+
+        self.meta.setText(
+            f"SCAN COVERAGE {coverage_text}"
+            f"  •  LAST SCAN {result['scan_time']}"
+        )
 
 
 class ResultPanel(QFrame):
+
     def __init__(self):
         super().__init__()
-        self.setObjectName("ResultPanel")
 
-        main = QVBoxLayout(self)
-        main.setContentsMargins(22, 22, 22, 22)
-        main.setSpacing(16)
+        self.setObjectName(
+            "ResultPanel"
+        )
+
+        root = QVBoxLayout(
+            self
+        )
+        root.setContentsMargins(
+            22,
+            22,
+            22,
+            22,
+        )
+        root.setSpacing(
+            15
+        )
 
         header = QHBoxLayout()
+
         left = QVBoxLayout()
 
-        self.title = QLabel("No scan yet")
-        self.title.setObjectName("ResultTitle")
+        self.title = QLabel(
+            "No scan yet"
+        )
+        self.title.setObjectName(
+            "ResultTitle"
+        )
 
-        self.explanation = QLabel("Start a scan to see the results.")
-        self.explanation.setObjectName("ResultExplanation")
-        self.explanation.setWordWrap(True)
+        self.description = QLabel(
+            "Start a scan to see diagnostic results."
+        )
+        self.description.setObjectName(
+            "ResultExplanation"
+        )
+        self.description.setWordWrap(
+            True
+        )
 
-        self.coverage = QLabel("Scan coverage: --")
-        self.coverage.setObjectName("ResultCoverage")
+        left.addWidget(
+            self.title
+        )
+        left.addWidget(
+            self.description
+        )
 
-        left.addWidget(self.title)
-        left.addWidget(self.explanation)
-        left.addWidget(self.coverage)
-        header.addLayout(left, 1)
+        header.addLayout(
+            left,
+            1,
+        )
 
-        score_layout = QVBoxLayout()
-        caption = QLabel("ESTIMATED SCORE")
-        caption.setObjectName("ScoreCaption")
+        right = QVBoxLayout()
 
-        self.score = QLabel("--")
-        self.score.setObjectName("ResultScore")
+        caption = QLabel(
+            "ESTIMATED SCORE"
+        )
+        caption.setObjectName(
+            "ScoreCaption"
+        )
 
-        self.status = QLabel("Waiting")
-        self.status.setObjectName("StatusBadge")
-        self.status.setProperty("state", "neutral")
+        self.score = QLabel(
+            "--"
+        )
+        self.score.setObjectName(
+            "ResultScore"
+        )
 
-        score_layout.addWidget(caption, alignment=Qt.AlignRight)
-        score_layout.addWidget(self.score, alignment=Qt.AlignRight)
-        score_layout.addWidget(self.status, alignment=Qt.AlignRight)
-        header.addLayout(score_layout)
-        main.addLayout(header)
+        self.badge = QLabel(
+            "WAITING"
+        )
+        self.badge.setObjectName(
+            "StatusBadge"
+        )
 
-        self.facts_card = SectionCard("What we found")
-        self.issues_card = SectionCard("Possible problems")
-        self.actions_card = SectionCard("What you should do")
+        right.addWidget(
+            caption,
+            alignment=Qt.AlignRight,
+        )
+        right.addWidget(
+            self.score,
+            alignment=Qt.AlignRight,
+        )
+        right.addWidget(
+            self.badge,
+            alignment=Qt.AlignRight,
+        )
 
-        main.addWidget(self.facts_card)
-        main.addWidget(self.issues_card)
-        main.addWidget(self.actions_card)
+        header.addLayout(
+            right
+        )
 
-        self.note = QLabel("Measured information and estimated conclusions are shown separately.")
-        self.note.setObjectName("ResultNote")
-        self.note.setWordWrap(True)
-        main.addWidget(self.note)
+        root.addLayout(
+            header
+        )
 
-    def set_status_state(self, state):
-        self.status.setProperty("state", state)
-        self.status.style().unpolish(self.status)
-        self.status.style().polish(self.status)
+        self.facts = SectionCard(
+            "What we found"
+        )
+        self.issues = SectionCard(
+            "Possible problems"
+        )
+        self.actions = SectionCard(
+            "What you should do"
+        )
+
+        root.addWidget(
+            self.facts
+        )
+        root.addWidget(
+            self.issues
+        )
+        root.addWidget(
+            self.actions
+        )
+
+        self.note = QLabel(
+            ""
+        )
+        self.note.setObjectName(
+            "ResultNote"
+        )
+        self.note.setWordWrap(
+            True
+        )
+
+        root.addWidget(
+            self.note
+        )
+
+
+    def set_badge(
+        self,
+        text,
+        state,
+    ):
+        self.badge.setText(
+            text
+        )
+        self.badge.setProperty(
+            "state",
+            state,
+        )
+
+        self.badge.style().unpolish(
+            self.badge
+        )
+        self.badge.style().polish(
+            self.badge
+        )
+
 
     def set_scanning(self):
-        self.title.setText("Scanning...")
-        self.explanation.setText("OpenFix is collecting diagnostic information from this PC.")
-        self.coverage.setText("Scan coverage: calculating...")
-        self.score.setText("--")
-        self.status.setText("Scanning")
-        self.set_status_state("neutral")
+        self.title.setText(
+            "Scanning..."
+        )
+        self.description.setText(
+            "OpenFix is collecting local diagnostic information."
+        )
+        self.score.setText(
+            "--"
+        )
+        self.set_badge(
+            "SCANNING",
+            "neutral",
+        )
 
-        self.facts_card.set_lines([], "Collecting information...")
-        self.issues_card.set_lines([], "Waiting for scan results...")
-        self.actions_card.set_lines([], "Recommendations will appear here if needed.")
-        self.note.setText("Local diagnostic scan in progress. No Cloud AI or external AI API is being used.")
+        self.facts.set_lines(
+            [],
+            "Collecting information...",
+        )
+        self.issues.set_lines(
+            [],
+            "Waiting for results...",
+        )
+        self.actions.set_lines(
+            [],
+            "Recommendations will appear here if needed.",
+        )
 
-    def set_result(self, result):
-        score = result["score"]
-        coverage = result.get("coverage", 100)
+        self.note.setText(
+            "Local diagnostic scan in progress."
+        )
 
-        self.title.setText(result["title"])
-        self.score.setText(f"{score}/100")
-        self.coverage.setText(f"Scan coverage: {coverage}%")
 
-        if coverage == 0:
-            self.status.setText("No data")
-            self.explanation.setText("This scan could not collect enough information to estimate this area.")
-            self.set_status_state("neutral")
-        elif score >= 90:
-            self.status.setText("Healthy")
-            self.explanation.setText("No major problem was detected in the available scan data.")
-            self.set_status_state("good")
-        elif score >= 75:
-            self.status.setText("Minor issues")
-            self.explanation.setText("A few items may be worth checking.")
-            self.set_status_state("minor")
-        elif score >= 50:
-            self.status.setText("Needs attention")
-            self.explanation.setText("Some diagnostic results may need attention.")
-            self.set_status_state("warning")
-        else:
-            self.status.setText("Important issues")
-            self.explanation.setText("OpenFix found items that should be checked carefully.")
-            self.set_status_state("danger")
+    def set_result(
+        self,
+        result,
+    ):
+        score = result[
+            "score"
+        ]
 
-        if 0 < coverage < 100:
-            self.explanation.setText(
-                self.explanation.text() + " This is a partial scan because some data was unavailable."
+        coverage = result.get(
+            "coverage"
+        )
+
+        self.title.setText(
+            result["title"]
+        )
+        self.score.setText(
+            f"{score}/100"
+        )
+
+        partial = (
+            coverage is not None
+            and coverage < 100
+        )
+
+        if partial:
+            self.set_badge(
+                "PARTIAL",
+                "partial",
+            )
+            self.description.setText(
+                f"Scan completed with {coverage}% diagnostic coverage."
             )
 
-        self.facts_card.set_lines(
-            result.get("facts", []),
+        elif score >= 90:
+            self.set_badge(
+                "HEALTHY",
+                "good",
+            )
+            self.description.setText(
+                "No major problem was detected."
+            )
+
+        elif score >= 75:
+            self.set_badge(
+                "CHECK",
+                "minor",
+            )
+            self.description.setText(
+                "A few items may be worth checking."
+            )
+
+        elif score >= 50:
+            self.set_badge(
+                "ATTENTION",
+                "warning",
+            )
+            self.description.setText(
+                "Some diagnostic results need attention."
+            )
+
+        else:
+            self.set_badge(
+                "IMPORTANT",
+                "danger",
+            )
+            self.description.setText(
+                "Important items should be checked carefully."
+            )
+
+        self.facts.set_lines(
+            result.get(
+                "facts",
+                [],
+            ),
             "No diagnostic facts are available.",
         )
-        self.issues_card.set_lines(
-            result.get("issues", []),
-            "No major problems were found in the available data.",
+
+        self.issues.set_lines(
+            result.get(
+                "issues",
+                [],
+            ),
+            "No major problems were found.",
         )
-        self.actions_card.set_lines(
-            result.get("actions", []),
+
+        self.actions.set_lines(
+            result.get(
+                "actions",
+                [],
+            ),
             "No immediate action appears necessary.",
         )
 
-        note = result.get("note", "")
+        coverage_text = (
+            f"{coverage}%"
+            if coverage is not None
+            else "Not available"
+        )
+
         self.note.setText(
-            "Important: " + note if note else "This result is diagnostic guidance, not a guarantee."
+            f"Scan coverage: {coverage_text} • "
+            f"Scan time: {result['scan_time']}\n"
+            f"{result.get('note', '')}"
         )
 
 
 class PageHeader(QWidget):
-    def __init__(self, title, subtitle):
+
+    def __init__(
+        self,
+        title,
+        subtitle,
+    ):
         super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
 
-        title_label = QLabel(title)
-        title_label.setObjectName("PageTitle")
+        root = QVBoxLayout(
+            self
+        )
+        root.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
 
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("PageSubtitle")
-        subtitle_label.setWordWrap(True)
+        title_label = QLabel(
+            title
+        )
+        title_label.setObjectName(
+            "PageTitle"
+        )
 
-        layout.addWidget(title_label)
-        layout.addWidget(subtitle_label)
+        subtitle_label = QLabel(
+            subtitle
+        )
+        subtitle_label.setObjectName(
+            "PageSubtitle"
+        )
+        subtitle_label.setWordWrap(
+            True
+        )
+
+        root.addWidget(
+            title_label
+        )
+        root.addWidget(
+            subtitle_label
+        )
 
 
 # =========================================================
@@ -1933,71 +3691,143 @@ class PageHeader(QWidget):
 # =========================================================
 
 class OpenFixWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
 
         self.worker = None
-        self.active_result_panel = None
-        self.active_progress = None
-        self.scan_buttons = []
 
-        self.setWindowTitle(f"OpenFix AI {APP_VERSION}")
-        self.resize(1380, 900)
-        self.setMinimumSize(1120, 740)
+        self.scan_buttons = []
+        self.active_result = None
+        self.active_progress = None
+
+        self.setWindowTitle(
+            f"OpenFix AI {APP_VERSION}"
+        )
+
+        self.resize(
+            1360,
+            880,
+        )
+
+        self.setMinimumSize(
+            1100,
+            720,
+        )
 
         root = QWidget()
-        root.setObjectName("Root")
-        self.setCentralWidget(root)
+        root.setObjectName(
+            "Root"
+        )
 
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        self.setCentralWidget(
+            root
+        )
 
-        self.sidebar = self.build_sidebar()
-        root_layout.addWidget(self.sidebar)
+        main = QHBoxLayout(
+            root
+        )
+        main.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+        main.setSpacing(
+            0
+        )
+
+        self.sidebar = (
+            self.build_sidebar()
+        )
+
+        main.addWidget(
+            self.sidebar
+        )
 
         content = QWidget()
-        content.setObjectName("Content")
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(34, 25, 34, 28)
-        content_layout.setSpacing(0)
+        content.setObjectName(
+            "Content"
+        )
 
-        content_layout.addWidget(self.build_topbar())
+        content_layout = QVBoxLayout(
+            content
+        )
+        content_layout.setContentsMargins(
+            34,
+            25,
+            34,
+            28,
+        )
 
-        self.pages = QStackedWidget()
-        content_layout.addWidget(self.pages, 1)
-        root_layout.addWidget(content, 1)
+        content_layout.addWidget(
+            self.build_topbar()
+        )
 
-        self.dashboard_page = self.build_dashboard_page()
-        self.smart_page = self.build_doctor_page(
-            "Local Smart Doctor",
-            "Combines local checks, connects related symptoms and helps decide what should be investigated first.",
-            "smart",
+        self.pages = (
+            QStackedWidget()
         )
-        self.internet_page = self.build_doctor_page(
-            "Internet Doctor",
-            "Checks connection availability, response delay, DNS and connection stability.",
-            "internet",
+
+        content_layout.addWidget(
+            self.pages,
+            1,
         )
-        self.gaming_page = self.build_doctor_page(
-            "Gaming Doctor",
-            "Checks common CPU, RAM, graphics and network conditions that may affect gaming.",
-            "gaming",
+
+        main.addWidget(
+            content,
+            1,
         )
-        self.slow_page = self.build_doctor_page(
-            "Slow PC Doctor",
-            "Checks common reasons Windows or applications may feel slow.",
-            "slow",
+
+        self.dashboard_page = (
+            self.build_dashboard()
         )
-        self.storage_page = self.build_doctor_page(
-            "Storage Doctor",
-            "Checks available space across your drives.",
-            "storage",
+
+        self.smart_page = (
+            self.build_doctor_page(
+                "Local Smart Doctor",
+                "Combines several local checks and helps decide what to investigate first.",
+                "smart",
+            )
         )
-        self.event_page = self.build_doctor_page(
-            "Windows Event Doctor",
-            "Checks recent Windows errors while filtering common background noise.",
-            "events",
+
+        self.internet_page = (
+            self.build_doctor_page(
+                "Internet Doctor",
+                "Checks connection availability, delay, DNS and stability.",
+                "internet",
+            )
+        )
+
+        self.gaming_page = (
+            self.build_doctor_page(
+                "Gaming Doctor",
+                "Checks common CPU, RAM, GPU and network conditions that may affect games.",
+                "gaming",
+            )
+        )
+
+        self.slow_page = (
+            self.build_doctor_page(
+                "Slow PC Doctor",
+                "Checks common reasons Windows or applications may feel slow.",
+                "slow",
+            )
+        )
+
+        self.storage_page = (
+            self.build_doctor_page(
+                "Storage Doctor",
+                "Checks free space across your drives.",
+                "storage",
+            )
+        )
+
+        self.event_page = (
+            self.build_doctor_page(
+                "Windows Event Doctor",
+                "Checks recent Windows errors while filtering common background noise.",
+                "events",
+            )
         )
 
         for page in (
@@ -2009,45 +3839,114 @@ class OpenFixWindow(QMainWindow):
             self.storage_page,
             self.event_page,
         ):
-            self.pages.addWidget(page)
+            self.pages.addWidget(
+                page
+            )
 
         self.apply_style()
-        self.show_page(0, self.dashboard_nav)
 
-    # -----------------------------------------------------
+        self.show_page(
+            0,
+            self.dashboard_nav,
+        )
+
+
+    # =====================================================
     # SIDEBAR
-    # -----------------------------------------------------
+    # =====================================================
 
     def build_sidebar(self):
         sidebar = QFrame()
-        sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(240)
+        sidebar.setObjectName(
+            "Sidebar"
+        )
+        sidebar.setFixedWidth(
+            240
+        )
 
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(18, 24, 18, 20)
-        layout.setSpacing(7)
+        root = QVBoxLayout(
+            sidebar
+        )
+        root.setContentsMargins(
+            18,
+            24,
+            18,
+            20,
+        )
+        root.setSpacing(
+            7
+        )
 
-        logo = QLabel("OpenFix AI")
-        logo.setObjectName("Logo")
+        logo = QLabel(
+            "OpenFix AI"
+        )
+        logo.setObjectName(
+            "Logo"
+        )
 
-        version = QLabel(APP_VERSION)
-        version.setObjectName("SidebarVersion")
+        version = QLabel(
+            APP_VERSION
+        )
+        version.setObjectName(
+            "SidebarVersion"
+        )
 
-        layout.addWidget(logo)
-        layout.addWidget(version)
-        layout.addSpacing(25)
+        root.addWidget(
+            logo
+        )
+        root.addWidget(
+            version
+        )
+        root.addSpacing(
+            25
+        )
 
-        section = QLabel("PC DIAGNOSTICS")
-        section.setObjectName("SidebarSection")
-        layout.addWidget(section)
+        section = QLabel(
+            "PC DIAGNOSTICS"
+        )
+        section.setObjectName(
+            "SidebarSection"
+        )
 
-        self.dashboard_nav = NavButton("⌂   Dashboard")
-        self.smart_nav = NavButton("✦   Smart Doctor")
-        self.internet_nav = NavButton("◉   Internet")
-        self.gaming_nav = NavButton("◆   Gaming")
-        self.slow_nav = NavButton("◐   Slow PC")
-        self.storage_nav = NavButton("▣   Storage")
-        self.event_nav = NavButton("⚠   Windows Events")
+        root.addWidget(
+            section
+        )
+
+        self.dashboard_nav = (
+            NavButton(
+                "⌂   Dashboard"
+            )
+        )
+        self.smart_nav = (
+            NavButton(
+                "✦   Smart Doctor"
+            )
+        )
+        self.internet_nav = (
+            NavButton(
+                "◉   Internet"
+            )
+        )
+        self.gaming_nav = (
+            NavButton(
+                "◆   Gaming"
+            )
+        )
+        self.slow_nav = (
+            NavButton(
+                "◐   Slow PC"
+            )
+        )
+        self.storage_nav = (
+            NavButton(
+                "▣   Storage"
+            )
+        )
+        self.event_nav = (
+            NavButton(
+                "⚠   Windows Events"
+            )
+        )
 
         self.nav_buttons = [
             self.dashboard_nav,
@@ -2059,502 +3958,1285 @@ class OpenFixWindow(QMainWindow):
             self.event_nav,
         ]
 
-        for button in self.nav_buttons:
-            layout.addWidget(button)
+        for button in (
+            self.nav_buttons
+        ):
+            root.addWidget(
+                button
+            )
 
-        layout.addStretch()
+        root.addStretch()
 
-        local_badge = QLabel("●  LOCAL ANALYSIS")
-        local_badge.setObjectName("LocalBadge")
+        badge = QLabel(
+            "●  LOCAL ANALYSIS"
+        )
+        badge.setObjectName(
+            "LocalBadge"
+        )
 
-        privacy = QLabel("No Cloud AI\nNo external AI API\nRead-only diagnostics")
-        privacy.setObjectName("PrivacyText")
+        privacy = QLabel(
+            "No Cloud AI\n"
+            "No external AI API\n"
+            "Read-only diagnostics"
+        )
+        privacy.setObjectName(
+            "PrivacyText"
+        )
 
-        layout.addWidget(local_badge)
-        layout.addWidget(privacy)
+        root.addWidget(
+            badge
+        )
+        root.addWidget(
+            privacy
+        )
 
-        connections = [
-            (self.dashboard_nav, 0),
-            (self.smart_nav, 1),
-            (self.internet_nav, 2),
-            (self.gaming_nav, 3),
-            (self.slow_nav, 4),
-            (self.storage_nav, 5),
-            (self.event_nav, 6),
+        routes = [
+            (
+                self.dashboard_nav,
+                0,
+            ),
+            (
+                self.smart_nav,
+                1,
+            ),
+            (
+                self.internet_nav,
+                2,
+            ),
+            (
+                self.gaming_nav,
+                3,
+            ),
+            (
+                self.slow_nav,
+                4,
+            ),
+            (
+                self.storage_nav,
+                5,
+            ),
+            (
+                self.event_nav,
+                6,
+            ),
         ]
 
-        for button, index in connections:
+        for button, index in routes:
             button.clicked.connect(
-                lambda checked=False, idx=index, btn=button: self.show_page(idx, btn)
+                lambda checked=False,
+                idx=index,
+                btn=button:
+                self.show_page(
+                    idx,
+                    btn,
+                )
             )
 
         return sidebar
 
-    # -----------------------------------------------------
+
+    # =====================================================
     # TOP BAR
-    # -----------------------------------------------------
+    # =====================================================
 
     def build_topbar(self):
-        wrapper = QWidget()
-        layout = QHBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 20)
+        widget = QWidget()
 
-        title = QLabel("PC Health & Diagnostics")
-        title.setObjectName("TopTitle")
-        layout.addWidget(title)
-        layout.addStretch()
+        layout = QHBoxLayout(
+            widget
+        )
+        layout.setContentsMargins(
+            0,
+            0,
+            0,
+            20,
+        )
 
-        badge = QLabel("MEASURED FACTS + ESTIMATED ANALYSIS")
-        badge.setObjectName("FactsBadge")
-        layout.addWidget(badge)
-
-        guide = QPushButton("How to Use")
-        guide.setObjectName("SecondaryButton")
-
-        terms = QPushButton("Simple Terms")
-        terms.setObjectName("SecondaryButton")
-
-        safety = QPushButton("Safety")
-        safety.setObjectName("SafetyButton")
-
-        guide.clicked.connect(self.show_guide)
-        terms.clicked.connect(self.show_terms)
-        safety.clicked.connect(self.show_safety)
-
-        layout.addWidget(guide)
-        layout.addWidget(terms)
-        layout.addWidget(safety)
-        return wrapper
-
-    # -----------------------------------------------------
-    # DASHBOARD
-    # -----------------------------------------------------
-
-    def build_dashboard_page(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        page = QWidget()
-        scroll.setWidget(page)
-
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 24)
-        layout.setSpacing(18)
+        title = QLabel(
+            "PC Health & Diagnostics"
+        )
+        title.setObjectName(
+            "TopTitle"
+        )
 
         layout.addWidget(
+            title
+        )
+        layout.addStretch()
+
+        badge = QLabel(
+            "MEASURED FACTS + ESTIMATED ANALYSIS"
+        )
+        badge.setObjectName(
+            "FactsBadge"
+        )
+
+        guide = QPushButton(
+            "Quick Guide"
+        )
+        guide.setObjectName(
+            "SecondaryButton"
+        )
+
+        terms = QPushButton(
+            "Simple Terms"
+        )
+        terms.setObjectName(
+            "SecondaryButton"
+        )
+
+        safety = QPushButton(
+            "Safety & Privacy"
+        )
+        safety.setObjectName(
+            "SafetyButton"
+        )
+
+        guide.clicked.connect(
+            self.show_guide
+        )
+        terms.clicked.connect(
+            self.show_terms
+        )
+        safety.clicked.connect(
+            self.show_safety
+        )
+
+        layout.addWidget(
+            badge
+        )
+        layout.addWidget(
+            guide
+        )
+        layout.addWidget(
+            terms
+        )
+        layout.addWidget(
+            safety
+        )
+
+        return widget
+
+
+    # =====================================================
+    # DASHBOARD
+    # =====================================================
+
+    def build_dashboard(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(
+            True
+        )
+        scroll.setFrameShape(
+            QFrame.NoFrame
+        )
+
+        page = QWidget()
+        scroll.setWidget(
+            page
+        )
+
+        root = QVBoxLayout(
+            page
+        )
+        root.setContentsMargins(
+            0,
+            0,
+            0,
+            24,
+        )
+        root.setSpacing(
+            16
+        )
+
+        root.addWidget(
             PageHeader(
                 "System Dashboard",
-                "A clear overview of your PC. Run a Full System Scan to update the information below.",
+                "A quick view of your PC health and the areas worth checking.",
             )
         )
 
-        self.summary_banner = SummaryBanner()
-        layout.addWidget(self.summary_banner)
+        self.summary = (
+            SummaryBanner()
+        )
+        root.addWidget(
+            self.summary
+        )
 
+        # Scan CTA moved very high
+        hero = QFrame()
+        hero.setObjectName(
+            "HeroCard"
+        )
+
+        hero_layout = QHBoxLayout(
+            hero
+        )
+        hero_layout.setContentsMargins(
+            22,
+            18,
+            22,
+            18,
+        )
+
+        text_box = QVBoxLayout()
+
+        hero_title = QLabel(
+            "Full System Scan"
+        )
+        hero_title.setObjectName(
+            "HeroTitle"
+        )
+
+        hero_text = QLabel(
+            "Run the main health checks and update this Dashboard."
+        )
+        hero_text.setObjectName(
+            "HeroText"
+        )
+
+        text_box.addWidget(
+            hero_title
+        )
+        text_box.addWidget(
+            hero_text
+        )
+
+        hero_layout.addLayout(
+            text_box,
+            1,
+        )
+
+        self.full_scan_btn = (
+            QPushButton(
+                "Start Full Scan"
+            )
+        )
+        self.full_scan_btn.setObjectName(
+            "PrimaryButton"
+        )
+        self.full_scan_btn.setCursor(
+            Qt.PointingHandCursor
+        )
+
+        hero_layout.addWidget(
+            self.full_scan_btn
+        )
+
+        root.addWidget(
+            hero
+        )
+
+        self.scan_buttons.append(
+            self.full_scan_btn
+        )
+
+        self.dashboard_progress = (
+            QProgressBar()
+        )
+        self.dashboard_progress.setRange(
+            0,
+            0,
+        )
+        self.dashboard_progress.hide()
+
+        root.addWidget(
+            self.dashboard_progress
+        )
+
+        # Main health cards
         row1 = QHBoxLayout()
-        row1.setSpacing(14)
-        self.cpu_card = StatCard("CPU")
-        self.ram_card = StatCard("RAM")
-        self.storage_card = StatCard("Windows Drive")
-        row1.addWidget(self.cpu_card)
-        row1.addWidget(self.ram_card)
-        row1.addWidget(self.storage_card)
-        layout.addLayout(row1)
+        row1.setSpacing(
+            14
+        )
+
+        self.cpu_card = (
+            StatCard("CPU")
+        )
+        self.ram_card = (
+            StatCard("RAM")
+        )
+        self.storage_card = (
+            StatCard(
+                "Windows Drive"
+            )
+        )
+
+        row1.addWidget(
+            self.cpu_card
+        )
+        row1.addWidget(
+            self.ram_card
+        )
+        row1.addWidget(
+            self.storage_card
+        )
+
+        root.addLayout(
+            row1
+        )
 
         row2 = QHBoxLayout()
-        row2.setSpacing(14)
-        self.network_card = StatCard("Internet")
-        self.gpu_card = StatCard("Graphics")
-        self.events_card = StatCard("Windows Events")
-        row2.addWidget(self.network_card)
-        row2.addWidget(self.gpu_card)
-        row2.addWidget(self.events_card)
-        layout.addLayout(row2)
-
-        system_title = QLabel("System Information")
-        system_title.setObjectName("DashboardSectionTitle")
-        layout.addWidget(system_title)
-
-        info_row1 = QHBoxLayout()
-        info_row1.setSpacing(12)
-        self.cpu_model_card = InfoValueCard("Processor")
-        self.total_ram_card = InfoValueCard("Installed RAM")
-        self.windows_card = InfoValueCard("Windows")
-        info_row1.addWidget(self.cpu_model_card)
-        info_row1.addWidget(self.total_ram_card)
-        info_row1.addWidget(self.windows_card)
-        layout.addLayout(info_row1)
-
-        info_row2 = QHBoxLayout()
-        info_row2.setSpacing(12)
-        self.gpu_info_card = InfoValueCard("Graphics Device")
-        self.uptime_card = InfoValueCard("PC Uptime")
-        self.adapter_card = InfoValueCard("Network Adapter")
-        info_row2.addWidget(self.gpu_info_card)
-        info_row2.addWidget(self.uptime_card)
-        info_row2.addWidget(self.adapter_card)
-        layout.addLayout(info_row2)
-
-        top_title = QLabel("Top RAM Usage")
-        top_title.setObjectName("DashboardSectionTitle")
-        layout.addWidget(top_title)
-
-        self.process_card = SectionCard("Applications using the most RAM")
-        self.process_card.set_lines([], "Run a Full System Scan to see the top applications.")
-        layout.addWidget(self.process_card)
-
-        hero = QFrame()
-        hero.setObjectName("HeroCard")
-        hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(24, 22, 24, 22)
-
-        left = QVBoxLayout()
-        hero_title = QLabel("Full System Scan")
-        hero_title.setObjectName("HeroTitle")
-        hero_text = QLabel(
-            "Checks the main diagnostic areas together and creates one system health overview."
+        row2.setSpacing(
+            14
         )
-        hero_text.setObjectName("HeroText")
-        hero_text.setWordWrap(True)
-        left.addWidget(hero_title)
-        left.addWidget(hero_text)
-        hero_layout.addLayout(left, 1)
 
-        self.full_scan_btn = QPushButton("Start Full Scan")
-        self.full_scan_btn.setObjectName("PrimaryButton")
-        self.full_scan_btn.setCursor(Qt.PointingHandCursor)
+        self.network_card = (
+            StatCard("Internet")
+        )
+        self.gpu_card = (
+            StatCard("Graphics")
+        )
+        self.events_card = (
+            StatCard(
+                "Windows Events"
+            )
+        )
+
+        row2.addWidget(
+            self.network_card
+        )
+        row2.addWidget(
+            self.gpu_card
+        )
+        row2.addWidget(
+            self.events_card
+        )
+
+        root.addLayout(
+            row2
+        )
+
+        # System information collapsible
+        self.system_section = (
+            CollapsibleSection(
+                "System Information",
+                "Processor, RAM, Windows, GPU, driver, uptime and network adapter",
+                expanded=False,
+            )
+        )
+
+        info_grid = QGridLayout()
+        info_grid.setSpacing(
+            12
+        )
+
+        self.cpu_model_card = (
+            InfoValueCard(
+                "Processor"
+            )
+        )
+        self.total_ram_card = (
+            InfoValueCard(
+                "Installed RAM"
+            )
+        )
+        self.windows_card = (
+            InfoValueCard(
+                "Windows"
+            )
+        )
+        self.gpu_info_card = (
+            InfoValueCard(
+                "Graphics Device"
+            )
+        )
+        self.gpu_driver_card = (
+            InfoValueCard(
+                "Graphics Driver"
+            )
+        )
+        self.uptime_card = (
+            InfoValueCard(
+                "PC Uptime"
+            )
+        )
+        self.adapter_card = (
+            InfoValueCard(
+                "Network Adapter"
+            )
+        )
+
+        info_grid.addWidget(
+            self.cpu_model_card,
+            0,
+            0,
+        )
+        info_grid.addWidget(
+            self.total_ram_card,
+            0,
+            1,
+        )
+        info_grid.addWidget(
+            self.windows_card,
+            0,
+            2,
+        )
+        info_grid.addWidget(
+            self.gpu_info_card,
+            1,
+            0,
+        )
+        info_grid.addWidget(
+            self.gpu_driver_card,
+            1,
+            1,
+        )
+        info_grid.addWidget(
+            self.uptime_card,
+            1,
+            2,
+        )
+        info_grid.addWidget(
+            self.adapter_card,
+            2,
+            0,
+            1,
+            3,
+        )
+
+        self.system_section.add_layout(
+            info_grid
+        )
+
+        root.addWidget(
+            self.system_section
+        )
+
+        # Top RAM collapsible
+        self.process_section = (
+            CollapsibleSection(
+                "Top RAM Usage",
+                "Applications currently using the most system memory",
+                expanded=False,
+            )
+        )
+
+        self.process_card = (
+            SectionCard(
+                "Applications using the most RAM"
+            )
+        )
+
+        self.process_card.set_lines(
+            [],
+            "Run a Full System Scan to see process information.",
+        )
+
+        self.process_section.add_widget(
+            self.process_card
+        )
+
+        root.addWidget(
+            self.process_section
+        )
+
+        self.dashboard_result = (
+            ResultPanel()
+        )
+
+        root.addWidget(
+            self.dashboard_result
+        )
+
+        root.addStretch()
+
         self.full_scan_btn.clicked.connect(
-            lambda: self.start_scan(
+            lambda:
+            self.start_scan(
                 "full",
                 self.dashboard_result,
                 self.dashboard_progress,
             )
         )
-        self.scan_buttons.append(self.full_scan_btn)
-        hero_layout.addWidget(self.full_scan_btn)
-        layout.addWidget(hero)
 
-        self.dashboard_progress = QProgressBar()
-        self.dashboard_progress.setRange(0, 0)
-        self.dashboard_progress.hide()
-        layout.addWidget(self.dashboard_progress)
-
-        self.dashboard_result = ResultPanel()
-        layout.addWidget(self.dashboard_result)
-        layout.addStretch()
         return scroll
 
-    # -----------------------------------------------------
-    # DOCTOR PAGE
-    # -----------------------------------------------------
 
-    def build_doctor_page(self, title, subtitle, mode):
+    # =====================================================
+    # DOCTOR PAGE
+    # =====================================================
+
+    def build_doctor_page(
+        self,
+        title,
+        subtitle,
+        mode,
+    ):
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidgetResizable(
+            True
+        )
+        scroll.setFrameShape(
+            QFrame.NoFrame
+        )
 
         page = QWidget()
-        scroll.setWidget(page)
-
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 24)
-        layout.setSpacing(18)
-        layout.addWidget(PageHeader(title, subtitle))
-
-        action_card = QFrame()
-        action_card.setObjectName("ActionCard")
-        action_layout = QHBoxLayout(action_card)
-        action_layout.setContentsMargins(22, 20, 22, 20)
-
-        info = QVBoxLayout()
-        ready = QLabel("Ready to scan")
-        ready.setObjectName("ActionTitle")
-        description = QLabel(
-            "This diagnostic scan is read-only and will not automatically change Windows settings."
+        scroll.setWidget(
+            page
         )
-        description.setObjectName("ActionText")
-        description.setWordWrap(True)
-        info.addWidget(ready)
-        info.addWidget(description)
-        action_layout.addLayout(info, 1)
 
-        button = QPushButton("Run Scan")
-        button.setObjectName("PrimaryButton")
-        button.setCursor(Qt.PointingHandCursor)
-        action_layout.addWidget(button)
-        self.scan_buttons.append(button)
-        layout.addWidget(action_card)
+        root = QVBoxLayout(
+            page
+        )
+        root.setContentsMargins(
+            0,
+            0,
+            0,
+            24,
+        )
+        root.setSpacing(
+            18
+        )
+
+        root.addWidget(
+            PageHeader(
+                title,
+                subtitle,
+            )
+        )
+
+        action = QFrame()
+        action.setObjectName(
+            "ActionCard"
+        )
+
+        action_layout = QHBoxLayout(
+            action
+        )
+        action_layout.setContentsMargins(
+            22,
+            19,
+            22,
+            19,
+        )
+
+        text = QVBoxLayout()
+
+        ready = QLabel(
+            "Ready to scan"
+        )
+        ready.setObjectName(
+            "ActionTitle"
+        )
+
+        description = QLabel(
+            "Read-only diagnostic scan. OpenFix will not automatically change Windows."
+        )
+        description.setObjectName(
+            "ActionText"
+        )
+
+        text.addWidget(
+            ready
+        )
+        text.addWidget(
+            description
+        )
+
+        action_layout.addLayout(
+            text,
+            1,
+        )
+
+        button = QPushButton(
+            "Run Scan"
+        )
+        button.setObjectName(
+            "PrimaryButton"
+        )
+
+        action_layout.addWidget(
+            button
+        )
+
+        self.scan_buttons.append(
+            button
+        )
+
+        root.addWidget(
+            action
+        )
 
         progress = QProgressBar()
-        progress.setRange(0, 0)
+        progress.setRange(
+            0,
+            0,
+        )
         progress.hide()
-        layout.addWidget(progress)
+
+        root.addWidget(
+            progress
+        )
 
         result = ResultPanel()
-        layout.addWidget(result)
-        layout.addStretch()
 
-        button.clicked.connect(lambda: self.start_scan(mode, result, progress))
+        root.addWidget(
+            result
+        )
+
+        root.addStretch()
+
+        button.clicked.connect(
+            lambda:
+            self.start_scan(
+                mode,
+                result,
+                progress,
+            )
+        )
+
         return scroll
 
-    # -----------------------------------------------------
-    # NAVIGATION / SCAN CONTROL
-    # -----------------------------------------------------
 
-    def show_page(self, index, active_button):
-        self.pages.setCurrentIndex(index)
-        for button in self.nav_buttons:
-            button.setChecked(button == active_button)
+    # =====================================================
+    # NAVIGATION / SCANNING
+    # =====================================================
 
-    def set_all_scan_buttons(self, enabled):
-        for button in self.scan_buttons:
-            button.setEnabled(enabled)
+    def show_page(
+        self,
+        index,
+        active,
+    ):
+        self.pages.setCurrentIndex(
+            index
+        )
 
-    def start_scan(self, mode, result_panel, progress):
-        if self.worker is not None and self.worker.isRunning():
-            QMessageBox.information(
-                self,
+        for button in (
+            self.nav_buttons
+        ):
+            button.setChecked(
+                button == active
+            )
+
+
+    def enable_scan_buttons(
+        self,
+        enabled,
+    ):
+        for button in (
+            self.scan_buttons
+        ):
+            button.setEnabled(
+                enabled
+            )
+
+
+    def start_scan(
+        self,
+        mode,
+        result,
+        progress,
+    ):
+        if (
+            self.worker is not None
+            and self.worker.isRunning()
+        ):
+            self.show_small_message(
                 "Scan already running",
-                "OpenFix is already running a scan.\n\nPlease wait for the current scan to finish.",
+                "OpenFix is already checking this PC. Please wait for the current scan to finish.",
             )
             return
 
-        self.active_result_panel = result_panel
+        self.active_result = result
         self.active_progress = progress
-        result_panel.set_scanning()
-        progress.show()
-        self.set_all_scan_buttons(False)
 
-        self.worker = ScanWorker(mode)
-        self.worker.finished.connect(self.scan_complete)
+        result.set_scanning()
+        progress.show()
+
+        self.enable_scan_buttons(
+            False
+        )
+
+        self.worker = ScanWorker(
+            mode
+        )
+        self.worker.finished.connect(
+            self.scan_complete
+        )
         self.worker.start()
 
-    def scan_complete(self, result):
+
+    def scan_complete(
+        self,
+        result,
+    ):
         if self.active_progress:
             self.active_progress.hide()
 
-        self.set_all_scan_buttons(True)
+        self.enable_scan_buttons(
+            True
+        )
 
-        if self.active_result_panel:
-            self.active_result_panel.set_result(result)
+        if self.active_result:
+            self.active_result.set_result(
+                result
+            )
 
-        if "dashboard_data" in result:
+        if (
+            "dashboard_data"
+            in result
+        ):
             self.update_dashboard(
-                result["dashboard_data"],
-                result.get("event_analysis", {}),
+                result[
+                    "dashboard_data"
+                ],
+                result[
+                    "event_analysis"
+                ],
             )
-            self.summary_banner.update_summary(result)
 
-    # -----------------------------------------------------
+            self.summary.update_summary(
+                result
+            )
+
+
+    # =====================================================
     # DASHBOARD UPDATE
-    # -----------------------------------------------------
+    # =====================================================
 
-    def update_dashboard(self, data, event_analysis):
+    def update_dashboard(
+        self,
+        data,
+        events,
+    ):
         cpu = data["cpu"]
+
         if cpu is None:
-            self.cpu_card.set_value("N/A", "Usage unavailable", "neutral", "Unavailable")
+            self.cpu_card.set_status(
+                "N/A",
+                "CPU usage could not be read",
+                "UNAVAILABLE",
+                "unavailable",
+            )
+
         elif cpu < 80:
-            self.cpu_card.set_value(f"{cpu:.0f}%", "Normal usage", "good", "Good")
+            self.cpu_card.set_status(
+                f"{cpu:.0f}%",
+                "Normal usage",
+                "GOOD",
+                "good",
+            )
+
         elif cpu < 90:
-            self.cpu_card.set_value(f"{cpu:.0f}%", "Higher usage", "minor", "High")
-        else:
-            self.cpu_card.set_value(f"{cpu:.0f}%", "Very high usage", "danger", "Very high")
+            self.cpu_card.set_status(
+                f"{cpu:.0f}%",
+                "Higher than normal",
+                "CHECK",
+                "minor",
+            )
 
-        memory = data["memory"]
-        ram = memory["percent"]
+        else:
+            self.cpu_card.set_status(
+                f"{cpu:.0f}%",
+                "Very high usage",
+                "HIGH",
+                "danger",
+            )
+
+        # RAM
+        memory = data[
+            "memory"
+        ]
+
+        ram = memory[
+            "percent"
+        ]
+
         if ram is None:
-            self.ram_card.set_value("N/A", "Usage unavailable", "neutral", "Unavailable")
+            self.ram_card.set_status(
+                "N/A",
+                "RAM usage unavailable",
+                "UNAVAILABLE",
+                "unavailable",
+            )
+
         elif ram < 80:
-            self.ram_card.set_value(f"{ram:.0f}%", "Normal usage", "good", "Good")
+            self.ram_card.set_status(
+                f"{ram:.0f}%",
+                "Normal usage",
+                "GOOD",
+                "good",
+            )
+
         elif ram < 90:
-            self.ram_card.set_value(f"{ram:.0f}%", "High usage", "minor", "High")
+            self.ram_card.set_status(
+                f"{ram:.0f}%",
+                "High usage",
+                "CHECK",
+                "minor",
+            )
+
         else:
-            self.ram_card.set_value(f"{ram:.0f}%", "Very high usage", "danger", "Very high")
+            self.ram_card.set_status(
+                f"{ram:.0f}%",
+                "Very high usage",
+                "HIGH",
+                "danger",
+            )
 
-        drive = data["system_drive"]
-        if drive:
-            free_gb = drive["free"] / (1024 ** 3)
-            free_percent = 100 - drive["percent"]
+        # Windows drive
+        drive = data[
+            "system_drive"
+        ]
 
-            if free_gb < 5 or free_percent < 3:
-                state, label = "danger", "Critical"
-            elif free_gb < 15 or free_percent < 8:
-                state, label = "warning", "Low"
+        if not drive:
+            self.storage_card.set_status(
+                "N/A",
+                "Drive information unavailable",
+                "UNAVAILABLE",
+                "unavailable",
+            )
+
+        else:
+            free_gb = (
+                drive["free"]
+                / (1024 ** 3)
+            )
+
+            free_percent = (
+                100
+                - drive["percent"]
+            )
+
+            subtitle = (
+                f"{drive['device']} free space • "
+                f"{free_percent:.0f}% free"
+            )
+
+            if (
+                free_gb < 5
+                or free_percent < 3
+            ):
+                badge = "LOW"
+                state = "danger"
+
+            elif (
+                free_gb < 15
+                or free_percent < 8
+            ):
+                badge = "CHECK"
+                state = "minor"
+
             else:
-                state, label = "good", "Good"
+                badge = "GOOD"
+                state = "good"
 
-            self.storage_card.set_value(
+            self.storage_card.set_status(
                 f"{free_gb:.0f} GB",
-                f"{drive['device']} free space • {free_percent:.0f}% free",
+                subtitle,
+                badge,
                 state,
-                label,
             )
-        else:
-            self.storage_card.set_value("N/A", "Drive information unavailable", "neutral", "Unavailable")
 
-        network = data["network"]
-        if not network["ping_test_available"]:
-            self.network_card.set_value("N/A", "Connectivity test unavailable", "neutral", "Unavailable")
-        elif not network["internet"]:
-            self.network_card.set_value("Offline", "Internet connection not confirmed", "danger", "Problem")
-        else:
-            ping = network["ping"]
-            loss = network["packet_loss"]
-            value = f"{ping} ms" if ping is not None else "Online"
+        # Network
+        network = data[
+            "network"
+        ]
 
-            if loss is not None and loss >= 3:
-                state, label = "warning", "Unstable"
-                subtitle = f"{loss}% packet loss"
-            elif ping is not None and ping >= 150:
-                state, label = "warning", "Slow response"
-                subtitle = f"{loss or 0}% packet loss"
+        if not network[
+            "internet"
+        ]:
+            self.network_card.set_status(
+                "Offline",
+                "Internet connection not confirmed",
+                "CHECK",
+                "danger",
+            )
+
+        else:
+            ping = network[
+                "ping"
+            ]
+            loss = network[
+                "packet_loss"
+            ]
+
+            value = (
+                f"{ping} ms"
+                if ping is not None
+                else "Online"
+            )
+
+            if (
+                loss is not None
+                and loss >= 3
+            ):
+                self.network_card.set_status(
+                    value,
+                    f"{loss}% packet loss",
+                    "UNSTABLE",
+                    "warning",
+                )
+
+            elif (
+                ping is not None
+                and ping >= 150
+            ):
+                self.network_card.set_status(
+                    value,
+                    "High response delay",
+                    "HIGH",
+                    "warning",
+                )
+
             else:
-                state, label = "good", "Good"
-                subtitle = f"{loss or 0}% packet loss"
+                self.network_card.set_status(
+                    value,
+                    (
+                        f"{loss}% packet loss"
+                        if loss is not None
+                        else "Connection reachable"
+                    ),
+                    "GOOD",
+                    "good",
+                )
 
-            self.network_card.set_value(value, subtitle, state, label)
-
+        # GPU
         gpu = data["gpu"]
-        if gpu["available"]:
+
+        if not gpu[
+            "available"
+        ]:
+            self.gpu_card.set_status(
+                "N/A",
+                "Graphics information unavailable",
+                "UNAVAILABLE",
+                "unavailable",
+            )
+
+        else:
             name = gpu["name"]
+
             if len(name) > 30:
-                name = name[:27] + "..."
+                name = (
+                    name[:27]
+                    + "..."
+                )
 
-            if gpu["temperature"] is None:
-                state, label = "neutral", "Temp N/A"
-                subtitle = "Temperature unavailable"
-            elif gpu["temperature"] >= 90:
-                state, label = "danger", "Hot"
-                subtitle = f"{gpu['temperature']:.0f}°C"
-            elif gpu["temperature"] >= 83:
-                state, label = "warning", "Warm"
-                subtitle = f"{gpu['temperature']:.0f}°C"
+            temperature = gpu[
+                "temperature"
+            ]
+
+            if temperature is None:
+                self.gpu_card.set_status(
+                    name,
+                    "Temperature sensor not available",
+                    "TEMP N/A",
+                    "unavailable",
+                )
+
+            elif temperature >= 90:
+                self.gpu_card.set_status(
+                    name,
+                    f"{temperature:.0f}°C",
+                    "HOT",
+                    "danger",
+                )
+
+            elif temperature >= 83:
+                self.gpu_card.set_status(
+                    name,
+                    f"{temperature:.0f}°C",
+                    "CHECK",
+                    "warning",
+                )
+
             else:
-                state, label = "good", "Good"
-                subtitle = f"{gpu['temperature']:.0f}°C"
+                self.gpu_card.set_status(
+                    name,
+                    f"{temperature:.0f}°C",
+                    "GOOD",
+                    "good",
+                )
 
-            self.gpu_card.set_value(name, subtitle, state, label)
-        else:
-            self.gpu_card.set_value("N/A", "GPU information unavailable", "neutral", "Unavailable")
+        # Events
+        serious = (
+            events[
+                "hardware_errors"
+            ]
+            + events[
+                "storage_errors"
+            ]
+            + events[
+                "shutdown_errors"
+            ]
+            + events[
+                "gpu_errors"
+            ]
+        )
 
-        if not event_analysis.get("available", False):
-            self.events_card.set_value("N/A", "Event Log unavailable", "neutral", "Unavailable")
-        else:
-            serious_events = (
-                event_analysis.get("hardware_errors", 0)
-                + event_analysis.get("storage_errors", 0)
-                + event_analysis.get("shutdown_errors", 0)
-                + event_analysis.get("gpu_errors", 0)
+        if not events[
+            "available"
+        ]:
+            self.events_card.set_status(
+                "N/A",
+                "Event data unavailable",
+                "UNAVAILABLE",
+                "unavailable",
             )
 
-            if serious_events == 0:
-                self.events_card.set_value("Good", "No major system event detected", "good", "Good")
-            elif serious_events <= 2:
-                self.events_card.set_value(str(serious_events), "Important event(s) detected", "warning", "Check")
-            else:
-                self.events_card.set_value(str(serious_events), "Several important events detected", "danger", "Attention")
-
-        self.cpu_model_card.set_value(data["cpu_model"])
-        self.total_ram_card.set_value(format_bytes(memory["total"]) if memory["total"] else "Not available")
-
-        windows = data["windows"]
-        if windows["available"]:
-            self.windows_card.set_value(f"{windows['name']} • Build {windows['build']}")
-        else:
-            self.windows_card.set_value("Not available")
-
-        self.gpu_info_card.set_value(gpu["name"] if gpu["available"] else "Not available")
-        self.uptime_card.set_value(data["uptime"]["text"])
-
-        adapter = network["adapter"]
-        self.adapter_card.set_value(adapter["name"] if adapter["available"] else "Not available")
-
-        process_lines = []
-        for index, process in enumerate(data["processes"][:3], start=1):
-            process_lines.append(
-                f"{index}. {process['name']} — {format_bytes(process['memory'])}"
+        elif serious == 0:
+            self.events_card.set_status(
+                "Good",
+                "No major system event detected",
+                "GOOD",
+                "good",
             )
 
-        self.process_card.set_lines(process_lines, "Process information is not available.")
+        else:
+            self.events_card.set_status(
+                str(serious),
+                "Important event(s) detected",
+                "CHECK",
+                "warning",
+            )
 
-    # -----------------------------------------------------
-    # HELP
-    # -----------------------------------------------------
+        # System info
+        self.cpu_model_card.set_value(
+            data["cpu_model"]
+        )
+
+        self.total_ram_card.set_value(
+            format_bytes(
+                memory["total"]
+            )
+        )
+
+        windows = data[
+            "windows"
+        ]
+
+        self.windows_card.set_value(
+            f"{windows['caption']} • "
+            f"Build {windows['build']}"
+        )
+
+        self.gpu_info_card.set_value(
+            (
+                gpu["name"]
+                if gpu["available"]
+                else "Not available"
+            )
+        )
+
+        self.gpu_driver_card.set_value(
+            (
+                gpu["driver"]
+                if gpu["driver"]
+                else "Not available"
+            )
+        )
+
+        self.uptime_card.set_value(
+            data[
+                "uptime"
+            ]["text"]
+        )
+
+        adapter = network[
+            "adapter"
+        ]
+
+        self.adapter_card.set_value(
+            (
+                f"{adapter['name']} • "
+                f"{adapter['description']} • "
+                f"{adapter['link_speed']}"
+                if adapter[
+                    "available"
+                ]
+                else "Not available"
+            )
+        )
+
+        # Processes
+        lines = []
+
+        total_ram = (
+            memory["total"]
+            or 0
+        )
+
+        for index, process in enumerate(
+            data[
+                "processes"
+            ][:3],
+            start=1,
+        ):
+            if total_ram > 0:
+                percent = (
+                    process["memory"]
+                    / total_ram
+                    * 100
+                )
+            else:
+                percent = 0
+
+            lines.append(
+                f"{index}. "
+                f"{process['name']} — "
+                f"{format_bytes(process['memory'])} "
+                f"({percent:.1f}% of installed RAM)"
+            )
+
+        self.process_card.set_lines(
+            lines,
+            "Process information is not available.",
+        )
+
+
+    # =====================================================
+    # DIALOGS
+    # =====================================================
 
     def show_guide(self):
-        QMessageBox.information(
+        dialog = ModernDialog(
             self,
             "How to Use OpenFix AI",
-            (
-                "Start with Full System Scan for a general overview.\n\n"
-                "WHAT WE FOUND\n"
-                "Information OpenFix read or measured from your PC.\n\n"
-                "POSSIBLE PROBLEMS\n"
-                "OpenFix's interpretation of those measurements.\n\n"
-                "WHAT YOU SHOULD DO\n"
-                "Suggested next steps, ordered so the most useful action appears first.\n\n"
-                "SCAN COVERAGE\n"
-                "Shows how much of the planned diagnostic information was available. "
-                "A partial scan is not automatically a bad-health result."
-            ),
+            "A simple guide to understanding the diagnostic results.",
+            [
+                (
+                    "1. Start with Full System Scan",
+                    "Use the Dashboard scan first for a general PC health overview.",
+                ),
+                (
+                    "What we found",
+                    "Facts that OpenFix read or measured from this PC.",
+                ),
+                (
+                    "Possible problems",
+                    "OpenFix's local interpretation of the measured information.",
+                ),
+                (
+                    "What you should do",
+                    "Suggested next steps. The most useful action appears first.",
+                ),
+                (
+                    "Scan coverage",
+                    "Shows how much of the planned diagnostic information OpenFix was able to read. Partial coverage does not automatically mean the PC has a problem.",
+                ),
+            ],
         )
+
+        dialog.exec()
+
 
     def show_terms(self):
-        QMessageBox.information(
+        dialog = ModernDialog(
             self,
             "Simple Terms",
-            (
-                "PING / RESPONSE TIME\n"
-                "How long data takes to travel to another computer and back. Lower is usually better.\n\n"
-                "PACKET LOSS\n"
-                "Network data that did not reach its destination. Packet loss can cause lag or unstable calls/games.\n\n"
-                "DNS\n"
-                "The system that converts website names into network addresses.\n\n"
-                "EVENT ID\n"
-                "A reference number Windows gives to a recorded system event.\n\n"
-                "SCAN COVERAGE\n"
-                "How much of the planned diagnostic data OpenFix was able to read.\n\n"
-                "CPU\n"
-                "The main processor that performs calculations.\n\n"
-                "RAM\n"
-                "Fast temporary memory used by Windows and running applications.\n\n"
-                "UPTIME\n"
-                "How long the PC has been running since the last full boot."
-            ),
+            "Short explanations for common computer terms used by OpenFix.",
+            [
+                (
+                    "Ping / Response Time",
+                    "How long data takes to travel to another computer and back. Lower is usually better.",
+                ),
+                (
+                    "Packet Loss",
+                    "Network data that did not reach its destination. Packet loss can cause lag, voice problems or unstable connections.",
+                ),
+                (
+                    "DNS",
+                    "The system that converts website names into network addresses.",
+                ),
+                (
+                    "Event ID",
+                    "A reference number Windows gives to a recorded system event.",
+                ),
+                (
+                    "Scan Coverage",
+                    "How much of the planned diagnostic information OpenFix successfully read.",
+                ),
+                (
+                    "CPU",
+                    "The main processor that performs calculations.",
+                ),
+                (
+                    "RAM",
+                    "Fast temporary memory used by Windows and running applications.",
+                ),
+                (
+                    "Uptime",
+                    "How long the PC has been running since its last full boot.",
+                ),
+            ],
         )
+
+        dialog.exec()
+
 
     def show_safety(self):
-        QMessageBox.warning(
+        dialog = ModernDialog(
             self,
             "Safety & Privacy",
-            (
-                "OpenFix AI currently performs read-only diagnostics.\n\n"
-                "• No Cloud AI is used.\n"
-                "• No external AI API is used.\n"
-                "• Smart analysis runs locally.\n"
-                "• OpenFix does not automatically edit the Registry.\n"
-                "• OpenFix does not automatically remove drivers.\n"
-                "• OpenFix does not automatically disable Windows services.\n\n"
-                "Internet Doctor performs normal connectivity tests such as DNS lookup and ping. "
-                "These are not AI services or AI APIs.\n\n"
-                "A low score does not prove hardware is broken, and a high score does not guarantee that no problem exists."
-            ),
+            "Important information about how OpenFix currently works.",
+            [
+                (
+                    "Local analysis",
+                    "No Cloud AI and no external AI API are used. Smart Doctor analysis is performed with built-in local rules.",
+                ),
+                (
+                    "Read-only diagnostics",
+                    "OpenFix does not automatically edit the Registry, remove drivers or disable Windows services.",
+                ),
+                (
+                    "Normal connectivity checks",
+                    "Internet Doctor uses standard network tests such as ping and DNS lookup. These are not AI services.",
+                ),
+                (
+                    "Scores are estimates",
+                    "A low score does not prove that hardware is broken. A score of 100 also cannot guarantee that every component is healthy.",
+                ),
+                (
+                    "Before major changes",
+                    "Important hardware problems should be confirmed with dedicated diagnostic tools before replacing hardware or making advanced Windows changes.",
+                ),
+            ],
+            warning=True,
         )
 
-    # -----------------------------------------------------
+        dialog.exec()
+
+
+    def show_small_message(
+        self,
+        title,
+        message,
+    ):
+        dialog = ModernDialog(
+            self,
+            title,
+            message,
+            [
+                (
+                    "Current status",
+                    "Wait for the current diagnostic scan to finish before starting another one.",
+                )
+            ],
+        )
+
+        dialog.resize(
+            560,
+            360,
+        )
+        dialog.exec()
+
+
+    # =====================================================
     # STYLE
-    # -----------------------------------------------------
+    # =====================================================
 
     def apply_style(self):
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             * {
                 font-family: "Segoe UI";
             }
 
-            #Root, #Content {
-                background: #0b0e13;
+            #Root,
+            #Content,
+            QDialog {
+                background: #0c0f14;
             }
 
             QScrollArea {
@@ -2567,8 +5249,8 @@ class OpenFixWindow(QMainWindow):
             }
 
             #Sidebar {
-                background: #12161c;
-                border-right: 1px solid #232a34;
+                background: #13171d;
+                border-right: 1px solid #242b35;
             }
 
             #Logo {
@@ -2578,7 +5260,7 @@ class OpenFixWindow(QMainWindow):
             }
 
             #SidebarVersion {
-                color: #697482;
+                color: #6d7785;
                 font-size: 11px;
             }
 
@@ -2597,16 +5279,15 @@ class OpenFixWindow(QMainWindow):
                 padding-left: 13px;
                 font-size: 13px;
                 font-weight: 600;
-                outline: none;
             }
 
             NavButton:hover {
                 background: #1a1f27;
-                color: #ffffff;
+                color: white;
             }
 
             NavButton:checked {
-                background: #1d2938;
+                background: #1e2939;
                 color: #8bb6ff;
             }
 
@@ -2623,7 +5304,6 @@ class OpenFixWindow(QMainWindow):
             #PrivacyText {
                 color: #66717f;
                 font-size: 10px;
-                padding-top: 4px;
             }
 
             #TopTitle {
@@ -2643,7 +5323,7 @@ class OpenFixWindow(QMainWindow):
             }
 
             #PageTitle {
-                color: #ffffff;
+                color: white;
                 font-size: 30px;
                 font-weight: 800;
             }
@@ -2651,13 +5331,6 @@ class OpenFixWindow(QMainWindow):
             #PageSubtitle {
                 color: #858f9d;
                 font-size: 14px;
-            }
-
-            #DashboardSectionTitle {
-                color: #e8ebef;
-                font-size: 16px;
-                font-weight: 750;
-                padding-top: 4px;
             }
 
             #SecondaryButton {
@@ -2684,164 +5357,59 @@ class OpenFixWindow(QMainWindow):
 
             #SummaryBanner {
                 background: #141b24;
-                border: 1px solid #263a53;
+                border: 1px solid #26415a;
                 border-radius: 14px;
             }
 
-            #SummaryBanner[state="good"] {
-                border: 1px solid #24543f;
-            }
-
-            #SummaryBanner[state="minor"] {
-                border: 1px solid #5a4d25;
-            }
-
-            #SummaryBanner[state="warning"] {
-                border: 1px solid #6a4224;
-            }
-
-            #SummaryBanner[state="danger"] {
-                border: 1px solid #6d2d34;
-            }
-
             #SummaryTitle {
-                color: #ffffff;
+                color: white;
                 font-size: 16px;
                 font-weight: 750;
             }
 
             #SummaryText {
-                color: #8fa0b5;
+                color: #90a3b9;
                 font-size: 12px;
             }
 
-            #CoverageText {
-                color: #667484;
+            #SummaryMeta {
+                color: #657991;
                 font-size: 9px;
                 font-weight: 700;
             }
 
             #SummaryScore {
                 color: #8cb8ff;
-                font-size: 36px;
+                font-size: 38px;
                 font-weight: 850;
-            }
-
-            #StatCard {
-                background: #151920;
-                border: 1px solid #252c36;
-                border-radius: 14px;
-                min-height: 122px;
-            }
-
-            #StatCard[state="good"] {
-                border: 1px solid #224836;
-            }
-
-            #StatCard[state="minor"] {
-                border: 1px solid #514624;
-            }
-
-            #StatCard[state="warning"] {
-                border: 1px solid #614021;
-            }
-
-            #StatCard[state="danger"] {
-                border: 1px solid #652b32;
-            }
-
-            #StatTitle {
-                color: #76818f;
-                font-size: 11px;
-                font-weight: 700;
-            }
-
-            #StatValue {
-                color: #ffffff;
-                font-size: 24px;
-                font-weight: 800;
-            }
-
-            #StatSubtitle {
-                color: #707b89;
-                font-size: 11px;
-            }
-
-            #StatStatus {
-                color: #8793a2;
-                background: #1d232c;
-                border-radius: 6px;
-                padding: 4px 7px;
-                font-size: 8px;
-                font-weight: 800;
-            }
-
-            #StatStatus[state="good"] {
-                color: #6fe0a5;
-                background: #153025;
-            }
-
-            #StatStatus[state="minor"] {
-                color: #e1c76d;
-                background: #302a18;
-            }
-
-            #StatStatus[state="warning"] {
-                color: #f0a35d;
-                background: #382516;
-            }
-
-            #StatStatus[state="danger"] {
-                color: #ff8080;
-                background: #351b1f;
-            }
-
-            #InfoValueCard {
-                background: #12161c;
-                border: 1px solid #222933;
-                border-radius: 11px;
-                min-height: 82px;
-            }
-
-            #InfoValueTitle {
-                color: #727d8a;
-                font-size: 10px;
-                font-weight: 700;
-            }
-
-            #InfoValueText {
-                color: #dce2ea;
-                font-size: 12px;
-                font-weight: 600;
             }
 
             #HeroCard {
                 background: #161b23;
                 border: 1px solid #29364c;
-                border-radius: 15px;
+                border-radius: 14px;
             }
 
             #HeroTitle {
-                color: #ffffff;
-                font-size: 19px;
+                color: white;
+                font-size: 18px;
                 font-weight: 750;
             }
 
             #HeroText {
                 color: #818c9b;
-                font-size: 13px;
+                font-size: 12px;
             }
 
             #PrimaryButton {
                 background: #367df6;
-                color: #ffffff;
+                color: white;
                 border: none;
                 border-radius: 9px;
                 padding: 11px 18px;
                 font-size: 13px;
                 font-weight: 700;
                 min-width: 110px;
-                outline: none;
             }
 
             #PrimaryButton:hover {
@@ -2853,6 +5421,150 @@ class OpenFixWindow(QMainWindow):
                 color: #748398;
             }
 
+            #StatCard {
+                background: #151920;
+                border: 1px solid #252c36;
+                border-radius: 14px;
+                min-height: 112px;
+            }
+
+            #StatCard[state="good"] {
+                border: 1px solid #1e513b;
+            }
+
+            #StatCard[state="warning"],
+            #StatCard[state="minor"] {
+                border: 1px solid #694517;
+            }
+
+            #StatCard[state="danger"] {
+                border: 1px solid #71313a;
+            }
+
+            #StatTitle {
+                color: #7f93ae;
+                font-size: 10px;
+                font-weight: 700;
+            }
+
+            #StatValue {
+                color: white;
+                font-size: 24px;
+                font-weight: 800;
+            }
+
+            #StatSubtitle {
+                color: #718198;
+                font-size: 10px;
+            }
+
+            #StatBadge {
+                background: #222832;
+                color: #8f9bab;
+                border-radius: 6px;
+                padding: 5px 9px;
+                font-size: 8px;
+                font-weight: 800;
+            }
+
+            #StatBadge[state="good"] {
+                background: #123725;
+                color: #69e6a0;
+            }
+
+            #StatBadge[state="minor"],
+            #StatBadge[state="warning"] {
+                background: #352512;
+                color: #f3b25e;
+            }
+
+            #StatBadge[state="danger"] {
+                background: #391b20;
+                color: #ff7f87;
+            }
+
+            #StatBadge[state="unavailable"] {
+                background: #202630;
+                color: #8a9ab0;
+            }
+
+            #CollapsibleSection {
+                background: transparent;
+                border: 1px solid #252c35;
+                border-radius: 13px;
+            }
+
+            #CollapsibleHeader {
+                background: #14191f;
+                border-radius: 12px;
+            }
+
+            #CollapsibleTitle {
+                color: #e8edf4;
+                font-size: 14px;
+                font-weight: 750;
+            }
+
+            #CollapsibleSubtitle {
+                color: #6e7c8e;
+                font-size: 10px;
+            }
+
+            #CollapseToggle {
+                background: #202833;
+                color: #90baff;
+                border: 1px solid #334257;
+                border-radius: 8px;
+                font-size: 23px;
+                font-weight: 700;
+            }
+
+            #CollapseToggle:hover {
+                background: #293447;
+                border: 1px solid #4971a6;
+            }
+
+            #CollapsibleContent {
+                background: #101419;
+                border-top: 1px solid #222933;
+            }
+
+            #InfoValueCard {
+                background: #13181e;
+                border: 1px solid #252c35;
+                border-radius: 10px;
+                min-height: 75px;
+            }
+
+            #InfoValueTitle {
+                color: #73869f;
+                font-size: 9px;
+                font-weight: 700;
+            }
+
+            #InfoValueText {
+                color: #edf1f7;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            #SectionCard {
+                background: #171b22;
+                border: 1px solid #242b34;
+                border-radius: 11px;
+            }
+
+            #SectionTitle {
+                color: #e0e5ed;
+                font-size: 13px;
+                font-weight: 750;
+            }
+
+            #SectionText {
+                color: #a5afbc;
+                font-size: 11px;
+            }
+
             #ActionCard {
                 background: #151920;
                 border: 1px solid #252c36;
@@ -2860,7 +5572,7 @@ class OpenFixWindow(QMainWindow):
             }
 
             #ActionTitle {
-                color: #ffffff;
+                color: white;
                 font-size: 16px;
                 font-weight: 700;
             }
@@ -2877,7 +5589,7 @@ class OpenFixWindow(QMainWindow):
             }
 
             #ResultTitle {
-                color: #ffffff;
+                color: white;
                 font-size: 21px;
                 font-weight: 800;
             }
@@ -2887,12 +5599,6 @@ class OpenFixWindow(QMainWindow):
                 font-size: 12px;
             }
 
-            #ResultCoverage {
-                color: #697685;
-                font-size: 10px;
-                font-weight: 650;
-            }
-
             #ScoreCaption {
                 color: #687381;
                 font-size: 9px;
@@ -2900,7 +5606,7 @@ class OpenFixWindow(QMainWindow):
             }
 
             #ResultScore {
-                color: #ffffff;
+                color: white;
                 font-size: 37px;
                 font-weight: 850;
             }
@@ -2910,7 +5616,7 @@ class OpenFixWindow(QMainWindow):
                 background: #202630;
                 border-radius: 7px;
                 padding: 5px 9px;
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 800;
             }
 
@@ -2934,21 +5640,9 @@ class OpenFixWindow(QMainWindow):
                 background: #351b1f;
             }
 
-            #SectionCard {
-                background: #171b22;
-                border: 1px solid #242b34;
-                border-radius: 12px;
-            }
-
-            #SectionTitle {
-                color: #e0e5ed;
-                font-size: 13px;
-                font-weight: 750;
-            }
-
-            #SectionText {
-                color: #a5afbc;
-                font-size: 12px;
+            #StatusBadge[state="partial"] {
+                color: #8dbfff;
+                background: #17283d;
             }
 
             #ResultNote {
@@ -2968,16 +5662,66 @@ class OpenFixWindow(QMainWindow):
                 border-radius: 4px;
             }
 
-            QMessageBox {
-                background: #f5f5f5;
+            #DialogTitle {
+                color: white;
+                font-size: 24px;
+                font-weight: 800;
             }
 
-            QMessageBox QLabel {
-                color: #151515;
-                min-width: 520px;
+            #DialogSubtitle {
+                color: #7f8b9b;
+                font-size: 12px;
             }
-            """
-        )
+
+            #DialogCard {
+                background: #161b22;
+                border: 1px solid #282f39;
+                border-radius: 11px;
+            }
+
+            #DialogWarningCard {
+                background: #201b14;
+                border: 1px solid #543b1c;
+                border-radius: 11px;
+            }
+
+            #DialogCardTitle {
+                color: #edf2f7;
+                font-size: 13px;
+                font-weight: 750;
+            }
+
+            #DialogCardText {
+                color: #a7b1bf;
+                font-size: 11px;
+            }
+
+            #DialogCloseX {
+                background: #191f27;
+                color: #aab4c1;
+                border: 1px solid #2c3540;
+                border-radius: 8px;
+                font-size: 20px;
+            }
+
+            #DialogCloseX:hover {
+                background: #252d38;
+                color: white;
+            }
+
+            #DialogCloseButton {
+                background: #367df6;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 18px;
+                font-weight: 700;
+            }
+
+            #DialogCloseButton:hover {
+                background: #4a8aff;
+            }
+        """)
 
 
 # =========================================================
@@ -2985,7 +5729,15 @@ class OpenFixWindow(QMainWindow):
 # =========================================================
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+
+    app = QApplication(
+        sys.argv
+    )
+
     window = OpenFixWindow()
+
     window.show()
-    sys.exit(app.exec())
+
+    sys.exit(
+        app.exec()
+    )
