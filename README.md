@@ -1,20 +1,83 @@
 # OpenFix AI
 
-OpenFix AI is an open-source Windows diagnostic and troubleshooting tool designed to help users understand what is wrong with their PC without needing advanced technical knowledge.
+OpenFix AI is an open-source Windows diagnostic and troubleshooting tool designed to help everyday users understand what may be happening inside their PC.
 
 The goal is simple:
 
-> Scan your PC, identify possible problems, and explain them in a way normal users can understand.
+> Scan your PC, identify possible problems, explain the results clearly, and suggest safe next steps.
+
+OpenFix AI is designed around a **local-first and privacy-focused approach**.
+
+- No Cloud AI
+- No external AI API
+- No automatic Registry changes
+- No automatic driver removal
+- No automatic Windows service changes
+
+Diagnostic analysis is performed locally on the user's PC.
 
 ---
 
+## v0.5.2 Development
+
+OpenFix AI v0.5.2 is currently focused on improving diagnostic accuracy, usability and the overall user experience.
+
+### Completed in v0.5.2 development
+
+- Modern sidebar-based interface
+- Redesigned system dashboard
+- System Health summary
+- CPU, RAM, storage, internet, GPU and Windows Event status cards
+- Local Smart Doctor improvements
+- Smarter issue correlation
+- Prioritized recommendations
+- Scan Coverage
+- Partial Scan detection
+- Last Scan time
+- Top RAM Usage
+- GPU driver information
+- Windows build information
+- PC uptime
+- Expandable System Information section
+- Expandable Top RAM Usage section
+- Modern Help, Simple Terms and Safety dialogs
+- Improved network diagnostics
+- Improved Event Log filtering
+- Improved multi-GPU handling
+- Reduced false-positive warnings
+- Improved scoring logic
+
 ## Current Version
 
-**OpenFix AI v0.4.3.1**
+**OpenFix AI v0.5.2-dev7**
 
-OpenFix AI is currently in early development.
+OpenFix AI is currently in active early development.
 
-At this stage, the application focuses on **read-only diagnostics** and does not make automatic changes to Windows.
+The application focuses on **local, read-only Windows diagnostics** designed to help normal users understand possible PC problems without requiring advanced technical knowledge.
+
+Current highlights include:
+
+- Modern system health dashboard
+- Local Smart Doctor
+- Internet diagnostics
+- Gaming diagnostics
+- Slow PC diagnostics
+- Storage diagnostics
+- Windows Event Log analysis
+- CPU, RAM, GPU and network monitoring
+- System information
+- Top RAM usage monitoring
+- Scan coverage and partial scan detection
+- Prioritized recommendations
+- Expandable dashboard sections
+- Simple explanations for technical terms
+- Safety and privacy guidance
+
+OpenFix AI does **not** use Cloud AI or external AI APIs.
+
+Diagnostic analysis is performed locally using built-in rules.
+
+OpenFix AI currently operates in **read-only diagnostic mode** and does not automatically modify Windows settings, drivers, Registry entries or services.
 
 ---
 
@@ -167,7 +230,7 @@ OpenFix AI will scan your system and display the results.
 - [x] v0.2 - GPU, network details, multiple drives, process monitoring and issue detection
 - [x] v0.3 - Doctor Mode
 - [x] v0.4 - Windows Event Log diagnostics
-- [ ] v0.5 - AI Doctor
+- [x] v0.5 - Local Smart Doctor and diagnostic analysis
 - [ ] v0.6 - Diagnostic report export
 - [ ] v0.7 - Safe repair tools
 - [ ] v1.0 - First stable Windows release
