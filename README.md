@@ -163,8 +163,6 @@ OpenFix AI will scan your system and display the results.
 
 ## Project Roadmap
 
-## Project Roadmap
-
 - [x] v0.1 - Basic CPU, RAM, disk and internet diagnostics
 - [x] v0.2 - GPU, network details, multiple drives, process monitoring and issue detection
 - [x] v0.3 - Doctor Mode
