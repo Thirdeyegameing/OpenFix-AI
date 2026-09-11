@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QProgressBar,
     QScrollArea,
+    QStackedWidget,
 )
 
-
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 
 # =========================================================
@@ -43,10 +43,8 @@ def format_bytes(value):
     except Exception:
         return "Unknown"
 
+
 def run_powershell(command):
-    """
-    Run a PowerShell command silently and return stdout.
-    """
     try:
         creationflags = 0
 
@@ -76,12 +74,8 @@ def run_powershell(command):
         return ""
 
 
-def get_system_drive():
-    return os.environ.get("SystemDrive", "C:") + "\\"
-
-
 # =========================================================
-# SYSTEM SCANNERS
+# SYSTEM SCAN
 # =========================================================
 
 def scan_cpu():
@@ -101,17 +95,13 @@ def scan_memory():
 
 def scan_disks():
     drives = []
-
     seen = set()
 
     for partition in psutil.disk_partitions(all=False):
 
         device = partition.device
 
-        if not device:
-            continue
-
-        if device in seen:
+        if not device or device in seen:
             continue
 
         seen.add(device)
@@ -131,11 +121,7 @@ def scan_disks():
                 }
             )
 
-        except (
-            PermissionError,
-            FileNotFoundError,
-            OSError,
-        ):
+        except Exception:
             pass
 
     return drives
@@ -145,30 +131,23 @@ def scan_top_processes(limit=5):
     processes = []
 
     for proc in psutil.process_iter(
-        ["pid", "name", "memory_info"]
+        ["pid", "name", "memory_info", "cpu_percent"]
     ):
-
         try:
             info = proc.info
 
-            if info["memory_info"] is None:
-                continue
-
-            memory = info["memory_info"].rss
+            memory = info["memory_info"].rss if info["memory_info"] else 0
 
             processes.append(
                 {
                     "name": info["name"] or "Unknown",
                     "pid": info["pid"],
                     "memory": memory,
+                    "cpu": info.get("cpu_percent") or 0,
                 }
             )
 
-        except (
-            psutil.NoSuchProcess,
-            psutil.AccessDenied,
-            psutil.ZombieProcess,
-        ):
+        except Exception:
             pass
 
     processes.sort(
@@ -192,10 +171,6 @@ def scan_gpu():
         "driver": None,
     }
 
-    # -------------------------
-    # Get basic GPU data
-    # -------------------------
-
     ps_command = r"""
     $gpus = Get-CimInstance Win32_VideoController |
     Select-Object Name, AdapterRAM, DriverVersion
@@ -206,7 +181,6 @@ def scan_gpu():
     output = run_powershell(ps_command)
 
     if output:
-
         try:
             data = json.loads(output)
 
@@ -219,10 +193,6 @@ def scan_gpu():
 
         except Exception:
             pass
-
-    # -------------------------
-    # NVIDIA extra info
-    # -------------------------
 
     try:
         creationflags = 0
@@ -258,9 +228,7 @@ def scan_gpu():
                 gpu["name"] = parts[0]
 
                 try:
-                    gpu["vram"] = (
-                        float(parts[1]) * 1024 * 1024
-                    )
+                    gpu["vram"] = float(parts[1]) * 1024 * 1024
                 except Exception:
                     pass
 
@@ -348,28 +316,13 @@ def get_active_adapter():
     }
 
     if output:
-
         try:
             data = json.loads(output)
 
-            adapter["name"] = (
-                data.get("Name") or "Unknown"
-            )
-
-            adapter["description"] = (
-                data.get("InterfaceDescription")
-                or "Unknown"
-            )
-
-            adapter["link_speed"] = (
-                data.get("LinkSpeed")
-                or "Unknown"
-            )
-
-            adapter["mac"] = (
-                data.get("MacAddress")
-                or "Unknown"
-            )
+            adapter["name"] = data.get("Name") or "Unknown"
+            adapter["description"] = data.get("InterfaceDescription") or "Unknown"
+            adapter["link_speed"] = data.get("LinkSpeed") or "Unknown"
+            adapter["mac"] = data.get("MacAddress") or "Unknown"
 
         except Exception:
             pass
@@ -412,130 +365,46 @@ def test_ping():
         if result.returncode == 0:
             result_data["internet"] = True
 
-        # -------------------------
-        # Ping average
-        # -------------------------
+        times = []
 
-        marker = "average ="
+        for line in output.splitlines():
 
-        if marker in output:
+            if "time=" in line:
+                try:
+                    part = line.split("time=", 1)[1]
+                    digits = ""
 
-            after = output.split(marker, 1)[1]
+                    for char in part:
+                        if char.isdigit():
+                            digits += char
+                        elif digits:
+                            break
 
-            number = ""
+                    if digits:
+                        times.append(int(digits))
+                except Exception:
+                    pass
 
-            for char in after:
+            elif "time<1ms" in line:
+                times.append(1)
 
-                if char.isdigit():
-                    number += char
-
-                elif number:
-                    break
-
-            if number:
-                result_data["ping"] = int(number)
-
-        # Thai Windows may not use "average ="
-        # Try to extract last ms fallback.
-
-        if result_data["ping"] is None:
-
-            lines = output.splitlines()
-
-            times = []
-
-            for line in lines:
-
-                if "ms" in line and "1.1.1.1" in line:
-
-                    if "time=" in line:
-
-                        try:
-                            part = line.split("time=", 1)[1]
-                            digits = ""
-
-                            for char in part:
-
-                                if char.isdigit():
-                                    digits += char
-
-                                elif digits:
-                                    break
-
-                            if digits:
-                                times.append(int(digits))
-
-                        except Exception:
-                            pass
-
-                    elif "time<1ms" in line:
-                        times.append(1)
-
-            if times:
-                result_data["ping"] = (
-                    sum(times) // len(times)
-                )
-
-        # -------------------------
-        # Packet loss
-        # -------------------------
+        if times:
+            result_data["ping"] = sum(times) // len(times)
 
         if "lost =" in output:
-
             try:
-                lost_part = output.split(
-                    "lost =", 1
-                )[1]
-
-                inside = lost_part.split(
-                    "(", 1
-                )[1].split("%", 1)[0]
+                lost_part = output.split("lost =", 1)[1]
+                inside = lost_part.split("(", 1)[1].split("%", 1)[0]
 
                 digits = "".join(
-                    char
-                    for char in inside
-                    if char.isdigit()
+                    char for char in inside if char.isdigit()
                 )
 
                 if digits:
-                    result_data["packet_loss"] = int(
-                        digits
-                    )
+                    result_data["packet_loss"] = int(digits)
 
             except Exception:
                 pass
-
-        # fallback for "% loss"
-        if result_data["packet_loss"] is None:
-
-            for line in output.splitlines():
-
-                if "%" in line:
-
-                    try:
-                        before = line.split("%")[0]
-
-                        digits = ""
-
-                        for char in reversed(before):
-
-                            if char.isdigit():
-                                digits = char + digits
-
-                            elif digits:
-                                break
-
-                        if digits:
-
-                            value = int(digits)
-
-                            if 0 <= value <= 100:
-                                result_data[
-                                    "packet_loss"
-                                ] = value
-
-                    except Exception:
-                        pass
 
     except Exception:
         pass
@@ -552,15 +421,10 @@ def test_dns():
 
 
 def scan_network():
-
     adapter = get_active_adapter()
-
     gateway = get_default_gateway()
-
     dns_servers = get_dns_servers()
-
     ping_result = test_ping()
-
     dns_ok = test_dns()
 
     return {
@@ -575,287 +439,375 @@ def scan_network():
 
 
 # =========================================================
-# ANALYZER
+# FULL SCAN
 # =========================================================
 
-def analyze_system(data):
+def collect_system_data():
+    data = {}
 
-    issues = []
-    recommendations = []
+    data["cpu"] = scan_cpu()
+    data["memory"] = scan_memory()
+    data["disks"] = scan_disks()
+    data["gpu"] = scan_gpu()
+    data["network"] = scan_network()
+    data["processes"] = scan_top_processes(5)
 
+    return data
+
+
+# =========================================================
+# DOCTORS
+# =========================================================
+
+def doctor_internet(data):
+    network = data["network"]
+
+    findings = []
+    score = 100
+
+    if not network["internet"]:
+        score -= 40
+        findings.append("Internet connectivity test failed.")
+    else:
+        findings.append("Internet connection is working.")
+
+    if not network["dns_ok"]:
+        score -= 20
+        findings.append("DNS resolution problem detected.")
+    else:
+        findings.append("DNS resolution is working.")
+
+    ping = network["ping"]
+
+    if ping is not None:
+        if ping >= 150:
+            score -= 25
+            findings.append(f"Ping is very high ({ping} ms).")
+        elif ping >= 80:
+            score -= 10
+            findings.append(f"Ping is elevated ({ping} ms).")
+        else:
+            findings.append(f"Ping is good ({ping} ms).")
+
+    packet_loss = network["packet_loss"]
+
+    if packet_loss is not None:
+        if packet_loss >= 10:
+            score -= 25
+            findings.append(
+                f"High packet loss detected ({packet_loss}%)."
+            )
+        elif packet_loss >= 3:
+            score -= 10
+            findings.append(
+                f"Packet loss detected ({packet_loss}%)."
+            )
+        else:
+            findings.append("Packet loss is 0% or very low.")
+
+    link = network["adapter"]["link_speed"]
+
+    if link != "Unknown":
+        findings.append(f"Adapter link speed: {link}")
+
+    return {
+        "title": "Internet Doctor",
+        "score": max(0, score),
+        "findings": findings,
+    }
+
+
+def doctor_gaming(data):
+    findings = []
+    score = 100
+
+    cpu = data["cpu"]
+    ram = data["memory"]["percent"]
+    gpu = data["gpu"]
+
+    if cpu >= 90:
+        score -= 20
+        findings.append("CPU usage is very high.")
+    elif cpu >= 75:
+        score -= 10
+        findings.append("CPU usage is elevated.")
+    else:
+        findings.append("CPU usage is normal.")
+
+    if ram >= 90:
+        score -= 25
+        findings.append("RAM usage is critically high.")
+    elif ram >= 80:
+        score -= 10
+        findings.append("RAM usage is high.")
+    else:
+        findings.append("RAM usage is normal.")
+
+    if gpu["usage"] is not None:
+        if gpu["usage"] >= 98:
+            findings.append(
+                "GPU is near full utilization. "
+                "This may be normal in GPU-limited games."
+            )
+        else:
+            findings.append(
+                f'GPU usage is {gpu["usage"]:.0f}%.'
+            )
+
+    if gpu["temperature"] is not None:
+        if gpu["temperature"] >= 90:
+            score -= 25
+            findings.append(
+                f'GPU temperature is critically high '
+                f'({gpu["temperature"]:.0f}°C).'
+            )
+        elif gpu["temperature"] >= 83:
+            score -= 10
+            findings.append(
+                f'GPU temperature is high '
+                f'({gpu["temperature"]:.0f}°C).'
+            )
+        else:
+            findings.append(
+                f'GPU temperature is normal '
+                f'({gpu["temperature"]:.0f}°C).'
+            )
+
+    network = data["network"]
+
+    if network["ping"] is not None and network["ping"] >= 100:
+        score -= 10
+        findings.append(
+            f'Network latency may affect online games '
+            f'({network["ping"]} ms).'
+        )
+
+    if (
+        network["packet_loss"] is not None
+        and network["packet_loss"] >= 3
+    ):
+        score -= 15
+        findings.append(
+            f'Packet loss may cause lag '
+            f'({network["packet_loss"]}%).'
+        )
+
+    return {
+        "title": "Gaming Doctor",
+        "score": max(0, score),
+        "findings": findings,
+    }
+
+
+def doctor_slow_pc(data):
+    findings = []
     score = 100
 
     cpu = data["cpu"]
     ram = data["memory"]["percent"]
 
-    # CPU
-    if cpu >= 95:
-
+    if cpu >= 85:
         score -= 20
+        findings.append("High CPU usage may be slowing the PC.")
+    else:
+        findings.append("CPU usage is currently normal.")
 
-        issues.append(
-            "CPU usage is extremely high."
-        )
-
-        recommendations.append(
-            "Check applications using high CPU."
-        )
-
-    elif cpu >= 80:
-
-        score -= 10
-
-        issues.append(
-            "CPU usage is currently high."
-        )
-
-    # RAM
-    if ram >= 95:
-
+    if ram >= 90:
         score -= 25
+        findings.append("RAM is nearly full.")
+    elif ram >= 80:
+        score -= 10
+        findings.append("RAM usage is high.")
+    else:
+        findings.append("RAM usage is normal.")
 
-        issues.append(
-            "Memory usage is critically high."
+    if data["processes"]:
+        top = data["processes"][0]
+
+        findings.append(
+            f'Highest RAM process: {top["name"]} '
+            f'({format_bytes(top["memory"])}).'
         )
 
-        recommendations.append(
-            "Close unnecessary applications."
-        )
+    for drive in data["disks"]:
+        if drive["percent"] >= 95:
+            score -= 20
+            findings.append(
+                f'{drive["device"]} is almost full.'
+            )
 
-    elif ram >= 85:
+    return {
+        "title": "Slow PC Doctor",
+        "score": max(0, score),
+        "findings": findings,
+    }
 
-        score -= 12
 
-        issues.append(
-            "Memory usage is high."
-        )
+def doctor_storage(data):
+    findings = []
+    score = 100
 
-    # Disk
     for drive in data["disks"]:
 
         free_gb = drive["free"] / (1024 ** 3)
 
         if free_gb < 5:
-
-            score -= 20
-
-            issues.append(
-                f'{drive["device"]} has less '
-                f'than 5 GB free.'
-            )
-
-            recommendations.append(
-                f'Free up space on '
-                f'{drive["device"]}.'
+            score -= 25
+            findings.append(
+                f'{drive["device"]} is critically low on space '
+                f'({free_gb:.1f} GB free).'
             )
 
         elif free_gb < 15:
-
-            score -= 8
-
-            issues.append(
-                f'{drive["device"]} is running '
-                f'low on free space.'
+            score -= 10
+            findings.append(
+                f'{drive["device"]} is running low on space '
+                f'({free_gb:.1f} GB free).'
             )
 
-    # Network
-    network = data["network"]
-
-    if not network["internet"]:
-
-        score -= 25
-
-        issues.append(
-            "Internet connectivity test failed."
-        )
-
-    if not network["dns_ok"]:
-
-        score -= 10
-
-        issues.append(
-            "DNS resolution test failed."
-        )
-
-        recommendations.append(
-            "Check DNS configuration."
-        )
-
-    packet_loss = network["packet_loss"]
-
-    if packet_loss is not None:
-
-        if packet_loss >= 10:
-
-            score -= 20
-
-            issues.append(
-                f"High packet loss detected "
-                f"({packet_loss}%)."
+        else:
+            findings.append(
+                f'{drive["device"]} has '
+                f'{free_gb:.1f} GB free.'
             )
-
-        elif packet_loss >= 3:
-
-            score -= 8
-
-            issues.append(
-                f"Packet loss detected "
-                f"({packet_loss}%)."
-            )
-
-    ping = network["ping"]
-
-    if ping is not None:
-
-        if ping >= 150:
-
-            score -= 12
-
-            issues.append(
-                f"Network latency is high "
-                f"({ping} ms)."
-            )
-
-        elif ping >= 80:
-
-            score -= 5
-
-            issues.append(
-                f"Network latency is elevated "
-                f"({ping} ms)."
-            )
-
-    # GPU
-    gpu_temp = data["gpu"]["temperature"]
-
-    if gpu_temp is not None:
-
-        if gpu_temp >= 90:
-
-            score -= 20
-
-            issues.append(
-                f"GPU temperature is critically "
-                f"high ({gpu_temp:.0f}°C)."
-            )
-
-        elif gpu_temp >= 83:
-
-            score -= 8
-
-            issues.append(
-                f"GPU temperature is high "
-                f"({gpu_temp:.0f}°C)."
-            )
-
-    if not issues:
-
-        recommendations.append(
-            "No critical problems were detected."
-        )
-
-    score = max(0, score)
 
     return {
-        "score": score,
-        "issues": issues,
-        "recommendations": recommendations,
+        "title": "Storage Doctor",
+        "score": max(0, score),
+        "findings": findings,
+    }
+
+
+def doctor_full(data):
+    findings = []
+
+    internet = doctor_internet(data)
+    gaming = doctor_gaming(data)
+    slow_pc = doctor_slow_pc(data)
+    storage = doctor_storage(data)
+
+    scores = [
+        internet["score"],
+        gaming["score"],
+        slow_pc["score"],
+        storage["score"],
+    ]
+
+    overall = sum(scores) // len(scores)
+
+    findings.append(
+        f'Internet Doctor score: {internet["score"]}/100'
+    )
+    findings.append(
+        f'Gaming Doctor score: {gaming["score"]}/100'
+    )
+    findings.append(
+        f'Slow PC Doctor score: {slow_pc["score"]}/100'
+    )
+    findings.append(
+        f'Storage Doctor score: {storage["score"]}/100'
+    )
+
+    return {
+        "title": "Full System Scan",
+        "score": overall,
+        "findings": findings,
     }
 
 
 # =========================================================
-# WORKER THREAD
+# WORKER
 # =========================================================
 
-class ScanWorker(QThread):
-
+class DoctorWorker(QThread):
     finished = Signal(dict)
 
+    def __init__(self, mode):
+        super().__init__()
+        self.mode = mode
+
     def run(self):
+        data = collect_system_data()
 
-        data = {}
+        if self.mode == "internet":
+            result = doctor_internet(data)
 
-        data["cpu"] = scan_cpu()
-        data["memory"] = scan_memory()
-        data["disks"] = scan_disks()
-        data["gpu"] = scan_gpu()
-        data["network"] = scan_network()
-        data["processes"] = scan_top_processes(5)
+        elif self.mode == "gaming":
+            result = doctor_gaming(data)
 
-        data["analysis"] = analyze_system(data)
+        elif self.mode == "slow":
+            result = doctor_slow_pc(data)
 
-        self.finished.emit(data)
+        elif self.mode == "storage":
+            result = doctor_storage(data)
+
+        else:
+            result = doctor_full(data)
+
+        self.finished.emit(result)
 
 
 # =========================================================
 # UI COMPONENTS
 # =========================================================
 
-class StatusCard(QFrame):
-
-    def __init__(self, title):
-
+class DoctorButton(QPushButton):
+    def __init__(self, title, subtitle):
         super().__init__()
 
-        self.setObjectName("StatusCard")
+        self.setText(
+            f"{title}\n{subtitle}"
+        )
+
+        self.setObjectName("DoctorButton")
+
+        self.setMinimumHeight(85)
+
+
+class ResultCard(QFrame):
+    def __init__(self):
+        super().__init__()
+
+        self.setObjectName("ResultCard")
 
         layout = QVBoxLayout(self)
 
-        layout.setContentsMargins(
-            20, 16, 20, 16
-        )
+        self.title = QLabel("Doctor Result")
+        self.title.setObjectName("ResultTitle")
 
-        self.title = QLabel(title)
-        self.title.setObjectName("CardTitle")
+        self.score = QLabel("--")
+        self.score.setObjectName("ResultScore")
 
-        self.status = QLabel(
-            "Waiting for scan..."
-        )
-
-        self.status.setObjectName(
-            "CardStatus"
-        )
-
-        self.detail = QLabel("")
-        self.detail.setObjectName(
-            "CardDetail"
-        )
-
-        self.detail.setWordWrap(True)
+        self.details = QLabel("")
+        self.details.setWordWrap(True)
+        self.details.setObjectName("ResultDetails")
 
         layout.addWidget(self.title)
-        layout.addWidget(self.status)
-        layout.addWidget(self.detail)
+        layout.addWidget(self.score)
+        layout.addWidget(self.details)
 
+
+# =========================================================
+# MAIN WINDOW
+# =========================================================
 
 class OpenFixWindow(QMainWindow):
-
     def __init__(self):
-
         super().__init__()
 
         self.setWindowTitle(
             f"OpenFix AI v{APP_VERSION}"
         )
 
-        self.resize(1200, 850)
-
-        # -------------------------
-        # Scroll area
-        # -------------------------
+        self.resize(1100, 800)
 
         scroll = QScrollArea()
-
         scroll.setWidgetResizable(True)
-
-        scroll.setFrameShape(
-            QFrame.NoFrame
-        )
+        scroll.setFrameShape(QFrame.NoFrame)
 
         self.setCentralWidget(scroll)
 
         root = QWidget()
-
         scroll.setWidget(root)
 
         layout = QVBoxLayout(root)
@@ -864,232 +816,106 @@ class OpenFixWindow(QMainWindow):
             30, 25, 30, 35
         )
 
-        layout.setSpacing(16)
-
-        # -------------------------
-        # Header
-        # -------------------------
+        layout.setSpacing(18)
 
         header = QLabel("OpenFix AI")
-
         header.setObjectName("Header")
 
         subtitle = QLabel(
-            "Understand what's wrong "
-            "with your PC."
+            "Choose a Doctor Mode to diagnose your PC."
         )
-
-        subtitle.setObjectName(
-            "Subtitle"
-        )
+        subtitle.setObjectName("Subtitle")
 
         version = QLabel(
-            f"Diagnostic Engine v{APP_VERSION}"
+            f"Doctor Engine v{APP_VERSION}"
         )
-
-        version.setObjectName(
-            "Version"
-        )
+        version.setObjectName("Version")
 
         layout.addWidget(header)
         layout.addWidget(subtitle)
         layout.addWidget(version)
 
-        # -------------------------
-        # Health
-        # -------------------------
-
-        health_frame = QFrame()
-
-        health_frame.setObjectName(
-            "HealthFrame"
-        )
-
-        health_layout = QVBoxLayout(
-            health_frame
-        )
-
-        health_title = QLabel(
-            "PC HEALTH"
-        )
-
-        health_title.setAlignment(
-            Qt.AlignCenter
-        )
-
-        health_title.setObjectName(
-            "HealthTitle"
-        )
-
-        self.health_score = QLabel("--")
-
-        self.health_score.setAlignment(
-            Qt.AlignCenter
-        )
-
-        self.health_score.setObjectName(
-            "HealthScore"
-        )
-
-        health_layout.addWidget(
-            health_title
-        )
-
-        health_layout.addWidget(
-            self.health_score
-        )
-
-        layout.addWidget(health_frame)
-
-        # -------------------------
-        # Scan button
-        # -------------------------
-
-        self.scan_button = QPushButton(
-            "SCAN MY PC"
-        )
-
-        self.scan_button.setObjectName(
-            "ScanButton"
-        )
-
-        self.scan_button.clicked.connect(
-            self.start_scan
-        )
-
-        layout.addWidget(
-            self.scan_button
-        )
-
-        self.progress = QProgressBar()
-
-        self.progress.setRange(0, 0)
-
-        self.progress.hide()
-
-        layout.addWidget(
-            self.progress
-        )
-
-        # -------------------------
-        # CPU + Memory
-        # -------------------------
-
+        # Doctor buttons
         row1 = QHBoxLayout()
 
-        self.cpu_card = StatusCard(
-            "CPU"
+        self.internet_btn = DoctorButton(
+            "Internet Doctor",
+            "Ping, DNS, packet loss, gateway"
         )
 
-        self.ram_card = StatusCard(
-            "Memory"
+        self.gaming_btn = DoctorButton(
+            "Gaming Doctor",
+            "CPU, RAM, GPU, network"
         )
 
-        row1.addWidget(
-            self.cpu_card
-        )
-
-        row1.addWidget(
-            self.ram_card
-        )
+        row1.addWidget(self.internet_btn)
+        row1.addWidget(self.gaming_btn)
 
         layout.addLayout(row1)
 
-        # -------------------------
-        # GPU + Network
-        # -------------------------
-
         row2 = QHBoxLayout()
 
-        self.gpu_card = StatusCard(
-            "GPU"
+        self.slow_btn = DoctorButton(
+            "Slow PC Doctor",
+            "Find common performance problems"
         )
 
-        self.network_card = StatusCard(
-            "Network"
+        self.storage_btn = DoctorButton(
+            "Storage Doctor",
+            "Check low disk space"
         )
 
-        row2.addWidget(
-            self.gpu_card
-        )
-
-        row2.addWidget(
-            self.network_card
-        )
+        row2.addWidget(self.slow_btn)
+        row2.addWidget(self.storage_btn)
 
         layout.addLayout(row2)
 
-        # -------------------------
-        # Storage
-        # -------------------------
-
-        self.storage_card = StatusCard(
-            "Storage"
+        self.full_btn = DoctorButton(
+            "Full System Scan",
+            "Run all Doctors"
         )
 
-        layout.addWidget(
-            self.storage_card
-        )
+        layout.addWidget(self.full_btn)
 
-        # -------------------------
-        # Processes
-        # -------------------------
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
 
-        self.process_card = StatusCard(
-            "Top Memory Processes"
-        )
+        layout.addWidget(self.progress)
 
-        layout.addWidget(
-            self.process_card
-        )
-
-        # -------------------------
-        # Issues
-        # -------------------------
-
-        self.issues_card = StatusCard(
-            "Issues Found"
-        )
-
-        layout.addWidget(
-            self.issues_card
-        )
-
-        # -------------------------
-        # Recommendations
-        # -------------------------
-
-        self.recommend_card = StatusCard(
-            "Recommendations"
-        )
-
-        layout.addWidget(
-            self.recommend_card
-        )
-
-        layout.addStretch()
+        self.result_card = ResultCard()
+        layout.addWidget(self.result_card)
 
         footer = QLabel(
-            "OpenFix AI • "
-            "Read-only diagnostic mode"
+            "OpenFix AI • Read-only diagnostic mode"
+        )
+        footer.setObjectName("Footer")
+
+        layout.addWidget(footer)
+
+        self.internet_btn.clicked.connect(
+            lambda: self.start_doctor("internet")
         )
 
-        footer.setObjectName(
-            "Footer"
+        self.gaming_btn.clicked.connect(
+            lambda: self.start_doctor("gaming")
         )
 
-        layout.addWidget(
-            footer
+        self.slow_btn.clicked.connect(
+            lambda: self.start_doctor("slow")
+        )
+
+        self.storage_btn.clicked.connect(
+            lambda: self.start_doctor("storage")
+        )
+
+        self.full_btn.clicked.connect(
+            lambda: self.start_doctor("full")
         )
 
         self.apply_style()
 
-    # =====================================================
-    # STYLE
-    # =====================================================
-
     def apply_style(self):
-
         self.setStyleSheet("""
             QMainWindow {
                 background: #f3f5f7;
@@ -1120,64 +946,47 @@ class OpenFixWindow(QMainWindow):
                 color: #9ca3af;
             }
 
-            #HealthFrame {
+            #DoctorButton {
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                padding: 16px;
+                text-align: left;
+                font-size: 15px;
+                font-weight: 600;
+                color: #111827;
+            }
+
+            #DoctorButton:hover {
+                background: #f9fafb;
+                border: 1px solid #9ca3af;
+            }
+
+            #DoctorButton:disabled {
+                color: #9ca3af;
+            }
+
+            #ResultCard {
                 background: white;
                 border-radius: 16px;
-                padding: 12px;
+                padding: 18px;
             }
 
-            #HealthTitle {
-                color: #6b7280;
-                font-size: 13px;
-                font-weight: 600;
+            #ResultTitle {
+                font-size: 22px;
+                font-weight: 700;
+                color: #111827;
             }
 
-            #HealthScore {
-                font-size: 52px;
+            #ResultScore {
+                font-size: 42px;
                 font-weight: 800;
                 color: #111827;
             }
 
-            #ScanButton {
-                background: #111827;
-                color: white;
-                border: none;
-                padding: 15px;
-                border-radius: 10px;
-                font-size: 15px;
-                font-weight: 700;
-            }
-
-            #ScanButton:hover {
-                background: #262d3a;
-            }
-
-            #ScanButton:disabled {
-                background: #9ca3af;
-            }
-
-            #StatusCard {
-                background: white;
-                border-radius: 14px;
-                padding: 8px;
-            }
-
-            #CardTitle {
-                color: #6b7280;
-                font-size: 13px;
-                font-weight: 600;
-            }
-
-            #CardStatus {
-                color: #111827;
-                font-size: 20px;
-                font-weight: 700;
-                margin-top: 5px;
-            }
-
-            #CardDetail {
-                color: #6b7280;
-                font-size: 13px;
+            #ResultDetails {
+                font-size: 14px;
+                color: #4b5563;
             }
 
             #Footer {
@@ -1193,344 +1002,65 @@ class OpenFixWindow(QMainWindow):
             }
         """)
 
-    # =====================================================
-    # SCAN
-    # =====================================================
+    def set_buttons_enabled(self, enabled):
+        self.internet_btn.setEnabled(enabled)
+        self.gaming_btn.setEnabled(enabled)
+        self.slow_btn.setEnabled(enabled)
+        self.storage_btn.setEnabled(enabled)
+        self.full_btn.setEnabled(enabled)
 
-    def start_scan(self):
-
-        self.scan_button.setEnabled(
-            False
-        )
-
-        self.scan_button.setText(
-            "SCANNING..."
-        )
-
+    def start_doctor(self, mode):
+        self.set_buttons_enabled(False)
         self.progress.show()
 
-        self.worker = ScanWorker()
+        self.result_card.title.setText(
+            "Scanning..."
+        )
+        self.result_card.score.setText("--")
+        self.result_card.details.setText(
+            "Collecting system information."
+        )
+
+        self.worker = DoctorWorker(mode)
 
         self.worker.finished.connect(
-            self.scan_complete
+            self.doctor_complete
         )
 
         self.worker.start()
 
-    # =====================================================
-    # RESULTS
-    # =====================================================
-
-    def scan_complete(self, data):
-
+    def doctor_complete(self, result):
         self.progress.hide()
+        self.set_buttons_enabled(True)
 
-        self.scan_button.setEnabled(
-            True
+        self.result_card.title.setText(
+            result["title"]
         )
 
-        self.scan_button.setText(
-            "SCAN AGAIN"
-        )
-
-        # -------------------------
-        # Health
-        # -------------------------
-
-        score = data["analysis"]["score"]
-
-        self.health_score.setText(
-            str(score)
-        )
-
-        # -------------------------
-        # CPU
-        # -------------------------
-
-        cpu = data["cpu"]
-
-        if cpu >= 90:
-            cpu_status = "Critical"
-
-        elif cpu >= 75:
-            cpu_status = "High"
-
-        else:
-            cpu_status = "Normal"
-
-        self.cpu_card.status.setText(
-            f"{cpu_status} • {cpu:.0f}%"
-        )
-
-        self.cpu_card.detail.setText(
-            "Current processor usage"
-        )
-
-        # -------------------------
-        # Memory
-        # -------------------------
-
-        memory = data["memory"]
-
-        ram = memory["percent"]
-
-        if ram >= 90:
-            ram_status = "Critical"
-
-        elif ram >= 80:
-            ram_status = "High"
-
-        else:
-            ram_status = "Normal"
-
-        self.ram_card.status.setText(
-            f"{ram_status} • {ram:.0f}%"
-        )
-
-        self.ram_card.detail.setText(
-            f'{format_bytes(memory["used"])} used '
-            f'of {format_bytes(memory["total"])}'
-        )
-
-        # -------------------------
-        # GPU
-        # -------------------------
-
-        gpu = data["gpu"]
-
-        gpu_status = gpu["name"]
-
-        details = []
-
-        if gpu["vram"]:
-
-            details.append(
-                f'VRAM: '
-                f'{format_bytes(gpu["vram"])}'
-            )
-
-        if gpu["usage"] is not None:
-
-            details.append(
-                f'Usage: '
-                f'{gpu["usage"]:.0f}%'
-            )
-
-        if gpu["temperature"] is not None:
-
-            details.append(
-                f'Temp: '
-                f'{gpu["temperature"]:.0f}°C'
-            )
-
-        if gpu["driver"]:
-
-            details.append(
-                f'Driver: {gpu["driver"]}'
-            )
-
-        self.gpu_card.status.setText(
-            gpu_status
-        )
-
-        self.gpu_card.detail.setText(
-            " • ".join(details)
-            if details
-            else "GPU information detected"
-        )
-
-        # -------------------------
-        # Network
-        # -------------------------
-
-        network = data["network"]
-
-        adapter = network["adapter"]
-
-        if network["internet"]:
-
-            network_status = "Online"
-
-        else:
-
-            network_status = "Offline"
-
-        net_details = []
-
-        net_details.append(
-            f'Adapter: {adapter["name"]}'
-        )
-
-        net_details.append(
-            f'Link: {adapter["link_speed"]}'
-        )
-
-        net_details.append(
-            f'Gateway: {network["gateway"]}'
-        )
-
-        if network["ping"] is not None:
-
-            net_details.append(
-                f'Ping: '
-                f'{network["ping"]} ms'
-            )
-
-        if (
-            network["packet_loss"]
-            is not None
-        ):
-
-            net_details.append(
-                f'Packet loss: '
-                f'{network["packet_loss"]}%'
-            )
-
-        if network["dns_servers"]:
-
-            dns_text = ", ".join(
-                network["dns_servers"][:3]
-            )
-
-            net_details.append(
-                f'DNS: {dns_text}'
-            )
-
-        self.network_card.status.setText(
-            network_status
-        )
-
-        self.network_card.detail.setText(
-            "\n".join(net_details)
-        )
-
-        # -------------------------
-        # Storage
-        # -------------------------
-
-        disk_lines = []
-
-        for drive in data["disks"]:
-
-            disk_lines.append(
-                f'{drive["device"]}  '
-                f'{drive["percent"]:.0f}% used  •  '
-                f'{format_bytes(drive["free"])} free  •  '
-                f'{drive["fstype"]}'
-            )
-
-        if disk_lines:
-
-            self.storage_card.status.setText(
-                f'{len(disk_lines)} drive(s) detected'
-            )
-
-            self.storage_card.detail.setText(
-                "\n".join(disk_lines)
-            )
-
-        else:
-
-            self.storage_card.status.setText(
-                "No drives detected"
-            )
-
-        # -------------------------
-        # Processes
-        # -------------------------
-
-        process_lines = []
-
-        for index, proc in enumerate(
-            data["processes"],
-            start=1,
-        ):
-
-            process_lines.append(
-                f'{index}. {proc["name"]}   '
-                f'{format_bytes(proc["memory"])}'
-            )
-
-        self.process_card.status.setText(
-            "Highest RAM usage"
-        )
-
-        self.process_card.detail.setText(
-            "\n".join(process_lines)
-        )
-
-        # -------------------------
-        # Issues
-        # -------------------------
-
-        issues = data["analysis"]["issues"]
-
-        if issues:
-
-            self.issues_card.status.setText(
-                f"{len(issues)} issue(s) detected"
-            )
-
-            lines = []
-
-            for issue in issues:
-
-                lines.append(
-                    f"• {issue}"
-                )
-
-            self.issues_card.detail.setText(
-                "\n".join(lines)
-            )
-
-        else:
-
-            self.issues_card.status.setText(
-                "No critical issues"
-            )
-
-            self.issues_card.detail.setText(
-                "OpenFix did not detect any "
-                "major problems during this scan."
-            )
-
-        # -------------------------
-        # Recommendations
-        # -------------------------
-
-        recommendations = (
-            data["analysis"][
-                "recommendations"
-            ]
+        self.result_card.score.setText(
+            f'{result["score"]}/100'
         )
 
         lines = []
 
-        for item in recommendations:
-
+        for item in result["findings"]:
             lines.append(
                 f"• {item}"
             )
 
-        self.recommend_card.status.setText(
-            "OpenFix suggestions"
-        )
-
-        self.recommend_card.detail.setText(
+        self.result_card.details.setText(
             "\n".join(lines)
         )
 
 
 # =========================================================
-# START APPLICATION
+# START
 # =========================================================
 
 if __name__ == "__main__":
-
     app = QApplication(sys.argv)
 
     window = OpenFixWindow()
-
     window.show()
 
     sys.exit(app.exec())
