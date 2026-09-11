@@ -163,72 +163,15 @@ A screenshot will be added here soon.
 
 ## Planned Features
 
-Future versions are planned to include:
+Future development will focus on:
 
-### Gaming Doctor
-
-Diagnose common gaming problems such as:
-
-- FPS drops
-- Stuttering
-- High GPU usage
-- High CPU usage
-- High temperatures
-- RAM pressure
-- Low disk space
-- Background applications
-- Network latency
-- Packet loss
-
-### Internet Doctor
-
-Check common network problems such as:
-
-- Slow connection
-- High ping
-- Packet loss
-- DNS problems
-- Gateway connectivity
-- Ethernet link speed
-- Network adapter problems
-
-### Slow PC Doctor
-
-Analyze possible causes of a slow Windows PC.
-
-### Storage Doctor
-
-Help users understand:
-
-- Low disk space
-- Large drives
-- Storage usage
-- Possible cleanup opportunities
-
-### AI Doctor
-
-A future AI-powered assistant that will explain diagnostic results using real system information collected by OpenFix AI.
-
-The AI will not simply guess.
-
-It will analyze actual diagnostic data collected from the user's computer.
-
----
-
-## Safety
-
-OpenFix AI is currently designed as a **read-only diagnostic tool**.
-
-Version 0.2 does not:
-
-- Delete files
-- Modify the Windows Registry
-- Disable Windows services
-- Change drivers
-- Change network settings
-- Modify system configuration automatically
-
-Future repair features will be designed with confirmation prompts and safety controls.
+- UI polish and usability improvements
+- Better Smart Doctor explanations
+- Better dashboard organization
+- Diagnostic report export
+- Safe repair tools with confirmation prompts
+- More stable scoring and diagnostics
+- First stable Windows release
 
 ---
 
