@@ -1,186 +1,148 @@
 # OpenFix AI
 
-OpenFix AI is an open-source Windows diagnostic and troubleshooting application designed to help everyday users understand what may be happening inside their PC.
+**Current version: v1.0.0 — First Stable Release**
 
-> Scan your PC, identify possible problems, explain the results clearly, and suggest safe next steps.
+OpenFix AI is an open-source Windows diagnostic and troubleshooting application for people who want a clearer explanation of what may be happening inside their PC.
 
-OpenFix AI follows a **local-first, privacy-focused, read-only diagnostic approach**.
+> Scan the PC, measure what is available, identify possible problems, explain why they matter, and suggest safe next steps.
 
----
+OpenFix AI is built around a **local-first, read-only, privacy-focused** design.
 
-## Current Version
-
-**OpenFix AI v0.5.2-dev12 — Reliability Gate**
-
-OpenFix AI is currently in active development.
-
-The current development focus is diagnostic reliability, accuracy, safer error handling, cleaner architecture, automated testing, and a better experience for normal Windows users.
-
-### Current status
-
-- Modular Python project structure
-- Read-only diagnostics
-- Local Smart Doctor
 - No Cloud AI
-- No external AI APIs
-- Improved diagnostic coverage handling
-- Improved Windows Event analysis
-- Improved Internet diagnostics
-- Improved Storage diagnostics
-- Local logging with log rotation
-- Regression tests
-- GitHub Actions / CI support
+- No OpenAI API
+- No external AI API
+- No telemetry or scan uploads
+- No automatic Registry edits
+- No automatic driver removal
+- No automatic Windows service changes
+- No automatic repair commands
+- No Administrator elevation request by design
 
 ---
 
-## Features
-
-### System Diagnostics
-
-- CPU usage monitoring
-- CPU model detection
-- RAM usage monitoring
-- Installed / usable memory information
-- Top RAM-consuming applications
-- GPU detection
-- Multi-GPU detection improvements
-- GPU driver version detection
-- GPU temperature support when available
-- Windows version and build information
-- PC uptime
-- Active network adapter detection
-- Drive and storage information
+## What v1.0.0 Includes
 
 ### System Health Dashboard
 
-The Dashboard provides a quick overview of important PC health information.
-
-Current dashboard areas include:
-
-- CPU
-- RAM
-- Windows Drive
-- Internet
-- Graphics
-- Windows Events
-- System Information
-- Top RAM Usage
-- Scan Coverage
-- Last Scan information
-- Estimated System Health score
-
-OpenFix distinguishes between:
-
-- Healthy
-- Needs attention
-- Important
-- Unavailable
-
-Missing diagnostic information is not automatically treated as a PC fault.
-
----
-
-## Doctor Modes
-
-### Internet Doctor
-
-Checks common network problems including:
-
-- Internet connectivity
-- DNS resolution
-- Active network adapter
-- Default gateway
-- Network response time
-- Packet loss
-- Connection stability
-
-Internet connectivity and ICMP/Ping availability are treated separately to reduce false positives.
-
-A network may still be online even when Ping is blocked by a firewall, VPN, or network policy.
-
-### Gaming Doctor
-
-Checks common conditions that may affect gaming performance:
+The dashboard provides a local snapshot of:
 
 - CPU usage
 - RAM usage
+- Windows drive free space
+- Internet connectivity and latency
+- GPU detection and temperature when available
+- Windows Event status
+- Windows version and build
+- CPU model
+- Installed / usable RAM
+- GPU driver information
+- PC uptime
+- Active network adapter
+- Top RAM-consuming applications
+- Scan coverage
+- Estimated System Health score
+
+OpenFix separates **health** from **coverage**. Unsupported sensors or unavailable information do not automatically count as a fault.
+
+### Full System Scan
+
+Full System Scan combines independent diagnostic areas:
+
+- Internet
+- Gaming
+- Slow PC
+- Storage
+- Windows Events
+
+Local Smart Doctor analyzes the collected information but is not counted as a second independent health area, which helps avoid double-counting the same problem.
+
+### Internet Doctor
+
+Checks:
+
+- Active network adapter
+- Default route / gateway
+- DNS resolution
+- External TCP connectivity
+- ICMP ping when available
+- Response time
+- Packet loss
+
+Internet connectivity is evaluated separately from Ping. A firewall, VPN, or network policy can block ICMP while normal internet access still works.
+
+### Gaming Doctor
+
+Checks common conditions that may affect gaming:
+
+- CPU pressure
+- RAM pressure
 - GPU detection
-- GPU temperature when available
+- GPU temperature when supported
 - Network latency
 - Packet loss
-- Connection stability
 
-Gaming Doctor currently does **not** measure in-game FPS or frame time.
+Gaming Doctor does not claim to measure in-game FPS or frame time.
 
 ### Slow PC Doctor
 
-Checks common reasons a Windows PC may feel slow:
+Checks:
 
-- High CPU usage
-- High RAM usage
+- CPU usage
+- RAM usage
 - RAM-heavy applications
-- Low Windows drive space
+- Windows drive free space
 - Current resource pressure
 
-For better results, run Slow PC Doctor while the PC is actually experiencing slow performance.
+For the most useful result, run it while the PC actually feels slow.
 
 ### Storage Doctor
 
 Checks:
 
-- Windows system drive
-- Local fixed drives
-- Available storage space
-- Free-space percentage
-- Drive size
+- Windows system drive free space
+- Local fixed-drive free space
 - Drive classification
+- Read-only Windows physical-disk health when available
+- Physical-disk operational status
+- Media type and bus type when Windows reports them
+- Physical-disk temperature when Windows exposes it
 
-Storage scoring uses different logic for system drives and data drives.
+OpenFix does **not** treat missing SMART / reliability data as proof that a drive is healthy or unhealthy. An explicit Windows `Warning`, `Unhealthy`, or degraded operational state is treated as a reason to investigate and back up important files, not as an absolute hardware verdict.
 
-Removable, network, and other non-system drives are not treated the same as the Windows system drive.
-
-Current Storage Doctor primarily evaluates storage capacity and available space. It does not yet guarantee the physical health of an SSD or HDD.
+Serial numbers and unique physical-disk identifiers are intentionally not collected.
 
 ### Windows Event Doctor
 
-Analyzes recent Windows Event Log information.
+Analyzes recent System and Application events while filtering common background noise.
 
-OpenFix currently looks for important categories such as:
+Examples of higher-value categories include:
 
-- Hardware-related errors
-- WHEA events
-- Unexpected shutdowns
-- Kernel-Power events
+- Serious WHEA hardware errors
+- Corrected WHEA warnings
+- Kernel-Power Event ID 41
+- EventLog Event ID 6008
 - Storage-related errors
 - Graphics-related errors
-- Application crashes
-- Relevant Windows errors
+- Application Error Event ID 1000
 
-Common background noise is filtered where possible, including:
+Common low-value noise such as DistributedCOM 10016 and common CAPI2 events is filtered.
 
-- DistributedCOM Event ID 10016
-- Common CAPI2 background events
+v1.0 can also identify **possible time-nearby relationships** between certain events, for example a graphics event occurring close to an unexpected shutdown. Correlation is shown as a possible relationship only; OpenFix does not claim that one event caused the other.
 
-OpenFix distinguishes between raw events, ignored background events, and relevant diagnostic events.
+### Local Smart Doctor
 
-Windows Event Logs can contain warnings and errors even when a PC is working normally, so Event Log results should not be treated as proof of hardware failure.
+Smart Doctor uses built-in local rules to combine measured facts and prioritize what deserves attention first.
 
----
+Examples include:
 
-## Local Smart Doctor
+- High RAM usage + one RAM-heavy application
+- Low storage + storage-related Event Log errors
+- Explicit physical-disk warning + storage events
+- GPU error + high GPU temperature
+- Good response time + packet loss
+- Unexpected shutdown + nearby hardware/graphics/storage event
 
-Local Smart Doctor combines diagnostic information and attempts to identify the most important issue to investigate first.
-
-It can correlate information such as:
-
-- High RAM usage + RAM-heavy application
-- Low storage + storage-related Windows events
-- GPU errors + high GPU temperature
-- Good Ping + high packet loss
-- Unexpected shutdowns + hardware or temperature signals
-- Current resource pressure
-
-Recommendations are prioritized using levels such as:
+Recommendations are ordered as:
 
 - **Do first**
 - **Next**
@@ -194,184 +156,56 @@ Smart Doctor also provides:
 - Possible Problems
 - Detailed Scan Information
 
-Smart Doctor uses built-in local diagnostic rules.
-
-**It does not use Cloud AI.**
+Smart Doctor is **not a cloud AI service**. It runs from local diagnostic rules in the OpenFix codebase.
 
 ---
 
-## Full System Scan
+## Safety Design
 
-Full System Scan combines the main diagnostic areas into one health overview.
+Safety is a release requirement, not an optional feature.
 
-Current areas include:
+### Read-only PowerShell guard
 
-- Internet
-- Gaming
-- Slow PC
-- Storage
-- Windows Events
+OpenFix centralizes PowerShell execution behind a read-only safety guard. Common mutating command families such as `Set-*`, `Remove-*`, `Disable-*`, repair commands, Registry write commands, service modification commands, and remote web request cmdlets are blocked by the diagnostic runner.
 
-Local Smart Doctor analyzes the collected information but is not counted as an additional independent health area.
+The diagnostic scripts currently use read-only Windows queries such as CIM/WMI, Event Log reads, network reads, and connectivity tests.
 
-This helps prevent the same problem from being counted twice in the overall score.
+### No automatic elevation
 
----
+OpenFix does not request Administrator elevation. If Windows refuses access to a diagnostic source, OpenFix should report that information as unavailable rather than silently escalating privileges.
 
-## Scan Coverage
+### No telemetry
 
-OpenFix separates **Health Score** from **Diagnostic Coverage**.
+OpenFix does not upload scan results, Event Log data, or hardware information to a server.
 
-This is important because missing information does not necessarily mean something is wrong.
+Normal Internet Doctor checks may contact fixed diagnostic targets for DNS, TCP connectivity, and ping. These are connectivity checks, not telemetry or AI services.
 
-Examples:
+### Local logs only
 
-- GPU detected but temperature sensor unavailable
-- Windows Event Log inaccessible
-- Ping blocked by a firewall
-- Hardware sensor unsupported
+Application logs are stored locally under the OpenFix application-data directory on Windows and use rotation to avoid unlimited growth.
 
-These situations can reduce diagnostic coverage without automatically reducing PC health.
+The log formatter redacts common user-home paths and MAC-address patterns before writing log text. Raw Windows Event messages are not included in analyzed result objects shown for sharing.
 
-If OpenFix does not have enough information to calculate a reliable score, the result can be shown as:
+### No background scan history in v1.0
 
-**N/A / UNAVAILABLE**
-
-instead of incorrectly showing 100/100.
+OpenFix v1.0 does not persist a database of previous PC scans. This keeps the first stable release simpler and reduces unnecessary local data collection.
 
 ---
 
-## Safety & Privacy
+## Understanding Scores
 
-OpenFix AI is currently designed as a **read-only diagnostic application**.
+OpenFix scores are **estimated diagnostic scores**, not hardware certification.
 
-OpenFix currently does not:
+- A low score does not prove that hardware is broken.
+- A score of 100 does not prove that every component is perfect.
+- `UNAVAILABLE` means OpenFix did not have enough information to produce a reliable score.
+- `PARTIAL` means useful data was collected, but some planned checks were unavailable.
 
-- Use Cloud AI
-- Use OpenAI API
-- Use external AI APIs
-- Automatically edit the Windows Registry
-- Automatically uninstall drivers
-- Automatically disable Windows services
-- Automatically change system settings
-- Automatically repair Windows
-- Automatically delete user files
-
-Local diagnostic information is analyzed using built-in rules.
-
-### Network Tests
-
-Internet Doctor may perform normal connectivity tests such as:
-
-- DNS lookup
-- Network adapter checks
-- Gateway checks
-- Connectivity tests
-- Ping / latency checks
-
-These are standard network diagnostic operations and are not AI services.
-
----
-
-## Diagnostic Scores
-
-OpenFix scores are **estimates**.
-
-A low score does not prove that hardware is broken.
-
-A score of 100 also does not guarantee that every component is perfectly healthy.
-
-Important hardware problems should always be confirmed with dedicated hardware diagnostic tools before replacing components or making major system changes.
-
----
-
-## Project Structure
-
-OpenFix is organized as a modular Python project.
-
-```text
-OpenFix-AI/
-│
-├─ main.py
-├─ requirements.txt
-├─ README.md
-├─ LICENSE
-│
-├─ openfix/
-│  ├─ app.py
-│  ├─ config.py
-│  ├─ models.py
-│  │
-│  ├─ core/
-│  │  ├─ scanner.py
-│  │  ├─ logger.py
-│  │  ├─ helpers.py
-│  │  └─ powershell.py
-│  │
-│  ├─ diagnostics/
-│  │  ├─ system.py
-│  │  ├─ gpu.py
-│  │  ├─ network.py
-│  │  ├─ events.py
-│  │  └─ collector.py
-│  │
-│  ├─ doctors/
-│  │  ├─ internet.py
-│  │  ├─ gaming.py
-│  │  ├─ slow_pc.py
-│  │  ├─ storage.py
-│  │  ├─ events.py
-│  │  ├─ smart.py
-│  │  └─ full_scan.py
-│  │
-│  └─ ui/
-│     ├─ main_window.py
-│     ├─ widgets.py
-│     └─ theme.py
-│
-└─ tests/
-```
-
-This structure makes OpenFix easier to test, maintain, and expand without keeping the entire application inside one large `main.py` file.
-
----
-
-## Logging
-
-OpenFix includes local diagnostic logging for development and troubleshooting.
-
-On Windows, logs are stored locally under the OpenFix application data directory.
-
-Logging uses rotation to prevent log files from growing indefinitely.
-
-Logs are intended to help investigate application errors and failed scans.
-
----
-
-## Testing
-
-OpenFix includes regression tests for important diagnostic behavior.
-
-Areas covered include:
-
-- Network parsing
-- Internet connectivity logic
-- Diagnostic coverage
-- Windows Event classification
-- Event filtering
-- Storage logic
-- Failure conditions
-- Smart Doctor behavior
-
-The project also includes GitHub Actions configuration for automated testing.
+Important hardware concerns should be confirmed with dedicated manufacturer or specialist diagnostic tools before replacing hardware.
 
 ---
 
 ## Requirements
-
-OpenFix AI currently targets Windows.
-
-Recommended environment:
 
 - Windows 10 or Windows 11
 - Python 3.10 or newer
@@ -379,25 +213,13 @@ Recommended environment:
 - psutil
 - Windows PowerShell
 
-Some diagnostic information depends on hardware and driver support.
-
-For example, GPU temperature information may not be available on every graphics device.
-
----
-
-## Installation
-
-Clone or download the repository.
-
-Open a terminal inside the OpenFix-AI folder.
-
-Install the required Python packages:
+Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Then start OpenFix:
+Start OpenFix:
 
 ```bash
 py main.py
@@ -409,126 +231,133 @@ or:
 python main.py
 ```
 
+`START_OPENFIX.bat` is also included for convenience on Windows.
+
 ---
 
-## Development Roadmap
+## Project Structure
 
-### Completed
+```text
+OpenFix-AI/
+│
+├─ main.py
+├─ START_OPENFIX.bat
+├─ requirements.txt
+├─ requirements-dev.txt
+├─ pyproject.toml
+├─ README.md
+├─ CHANGELOG.md
+├─ SECURITY.md
+├─ RELEASE_NOTES_v1.0.0.md
+├─ LICENSE
+│
+├─ openfix/
+│  ├─ app.py
+│  ├─ config.py
+│  ├─ models.py
+│  │
+│  ├─ core/
+│  │  ├─ helpers.py
+│  │  ├─ logger.py
+│  │  ├─ powershell.py
+│  │  ├─ scanner.py
+│  │  └─ scoring.py
+│  │
+│  ├─ diagnostics/
+│  │  ├─ collector.py
+│  │  ├─ events.py
+│  │  ├─ gpu.py
+│  │  ├─ network.py
+│  │  ├─ storage_health.py
+│  │  └─ system.py
+│  │
+│  ├─ doctors/
+│  │  ├─ events.py
+│  │  ├─ full_scan.py
+│  │  ├─ gaming.py
+│  │  ├─ internet.py
+│  │  ├─ slow_pc.py
+│  │  ├─ smart.py
+│  │  └─ storage.py
+│  │
+│  └─ ui/
+│     ├─ main_window.py
+│     ├─ theme.py
+│     └─ widgets.py
+│
+└─ tests/
+```
 
-- [x] v0.1 — Basic CPU, RAM, disk and internet diagnostics
-- [x] v0.2 — GPU, network, drive and process diagnostics
-- [x] v0.3 — Doctor Mode
-- [x] v0.4 — Windows Event diagnostics
-- [x] v0.5 — Local Smart Doctor
-- [x] v0.5.2 — Major UI, diagnostic accuracy and architecture development
-- [x] v0.5.2-dev11 — Production Foundation
-- [x] v0.5.2-dev12 — Reliability Gate
+---
 
-### Planned
+## Testing and CI
 
-#### v0.5.2-dev13 — Accuracy Expansion
+The repository contains regression tests for areas including:
 
-Planned areas include:
-
-- Physical disk health information
-- Better SSD / HDD diagnostics
-- Windows Event timeline
+- Health / coverage behavior
+- Unavailable scan handling
+- Structured network checks
+- Internet vs ICMP behavior
+- Event classification
 - Event correlation
-- Improved Smart Doctor correlation
-- Local scan history
-- Compare current scan with previous scan
-- Improved application/process grouping
-- Additional regression tests
+- Storage scoring
+- Physical-disk status interpretation
+- Process grouping
+- Local log privacy redaction
+- Read-only PowerShell safety guard
+- Stable release contract
 
-#### v0.6 — Diagnostic Report Export
+GitHub Actions runs compile checks and regression tests on Windows with supported Python versions.
 
-Planned report features:
+Run tests locally:
 
-- Export diagnostic reports
-- Save scan summaries
-- Easier sharing of diagnostic information
-- Human-readable report formatting
-
-#### v0.7 — Safe Repair Tools
-
-Possible future repair features may include:
-
-- Guided repair suggestions
-- Safe network repair helpers
-- Basic cleanup assistance
-- Step-by-step repair actions
-- Confirmation before changes
-- Strong safety checks
-
-Repair functionality will not be enabled until the safety model is considered reliable enough.
-
-#### v1.0 — First Stable Release
-
-Goals include:
-
-- Stable diagnostic architecture
-- Reliable scoring
-- Better hardware coverage
-- Polished UI
-- Strong documentation
-- Better automated testing
-- Beginner-friendly troubleshooting
-- Safe and predictable behavior
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
 
 ---
 
-## Development Principles
+## Privacy Notes for Bug Reports
 
-### Local First
+If you report a bug, useful information includes:
 
-Diagnostic analysis should happen locally whenever possible.
+- Windows version
+- OpenFix version
+- Doctor / scan mode used
+- Error message
+- Session ID
+- Relevant local log lines
+- Steps to reproduce
 
-### Read Only First
+Before sharing logs publicly, review them yourself. OpenFix performs basic redaction, but no automated redaction system can guarantee removal of every piece of personal information.
 
-OpenFix should understand the PC before attempting to change it.
+Never include passwords, security codes, account tokens, or other secrets in a bug report.
 
-### Missing Data Is Not Failure
+---
 
-Unsupported sensors or inaccessible information should not automatically reduce the health score.
+## Roadmap After v1.0
 
-### Explain Results Clearly
+The first stable release intentionally avoids automatic repairs. Future work may include better diagnostic coverage, report export, and carefully designed optional repair helpers, but only when the safety model is strong enough.
 
-Diagnostic information should be understandable by normal PC users.
+Planned directions may include:
 
-### Avoid False Confidence
+- Improved physical-drive diagnostics
+- Better hardware sensor coverage
+- Optional local report export
+- More diagnostic regression tests
+- UI polish and accessibility
+- Additional correlation rules with conservative wording
 
-OpenFix should not claim that hardware is broken without enough evidence.
-
-### Safety Before Automation
-
-Automatic repair features should only be introduced when they can be implemented safely.
+Automatic repair, Registry modification, driver removal, or service modification are **not** part of v1.0.
 
 ---
 
 ## Open Source
 
-OpenFix AI is an open-source project.
+OpenFix AI is open source under the **MIT License**.
 
 Contributions, testing, bug reports, and ideas are welcome.
-
-If you discover a bug, please provide as much information as possible, including:
-
-- Windows version
-- OpenFix version
-- Diagnostic mode used
-- Error message
-- Relevant log information
-- Steps to reproduce the problem
-
-Please avoid including passwords, private personal information, or sensitive account information in bug reports.
-
----
-
-## License
-
-OpenFix AI is released under the **MIT License**.
-
-See `LICENSE` for details.
 
 ---
 
@@ -536,14 +365,12 @@ See `LICENSE` for details.
 
 **Thirdeyegameing**
 
-OpenFix AI is an independent open-source project currently under active development.
+OpenFix AI is an independent open-source project.
 
 ---
 
 ## Disclaimer
 
-OpenFix AI is a diagnostic and troubleshooting tool.
+OpenFix AI is a diagnostic and troubleshooting tool. Its results are informational estimates and do not guarantee hardware condition or system health.
 
-Its results are informational estimates and should not be considered a guarantee of hardware condition or system health.
-
-Always back up important files before making major system changes or replacing hardware.
+Back up important files before making major system changes or replacing hardware.

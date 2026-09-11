@@ -85,6 +85,13 @@ def create_event_result(package):
                 f"[{event['category']}] {event['provider']} (Event ID {event['id']}, {timestamp})"
             )
 
+    if analysis.get("correlations"):
+        facts.append("Possible event relationships:")
+        for correlation in analysis["correlations"][:3]:
+            facts.append(
+                f"{correlation['description']} ({correlation['seconds_apart']} seconds apart; correlation only, not proof of cause)."
+            )
+
     return make_result(
         "Windows Event Doctor",
         score,

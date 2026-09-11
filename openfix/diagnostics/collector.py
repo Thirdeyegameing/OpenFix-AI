@@ -1,5 +1,6 @@
 from openfix.diagnostics.gpu import scan_gpu
 from openfix.diagnostics.network import scan_network
+from openfix.diagnostics.storage_health import scan_physical_disks
 from openfix.diagnostics.system import (
     find_system_drive,
     get_cpu_model,
@@ -49,7 +50,11 @@ def collect_slow_pc_data():
 
 def collect_storage_data():
     disks = scan_disks()
-    return {"disks": disks, "system_drive": find_system_drive(disks)}
+    return {
+        "disks": disks,
+        "system_drive": find_system_drive(disks),
+        "physical_storage": scan_physical_disks(),
+    }
 
 
 def collect_system_data():
@@ -62,6 +67,7 @@ def collect_system_data():
         "installed_ram": get_installed_ram_bytes(),
         "disks": disks,
         "system_drive": find_system_drive(disks),
+        "physical_storage": scan_physical_disks(),
         "processes": scan_top_processes(12),
         "gpu": scan_gpu(),
         "network": scan_network(),
@@ -109,7 +115,13 @@ def slow_pc_coverage(data):
 
 
 def storage_coverage(data):
-    return 100 if data.get("disks") else 0
+    physical = data.get("physical_storage", {})
+    return weighted_coverage(
+        [
+            (bool(data.get("disks")), 80),
+            (bool(physical.get("available")), 20),
+        ]
+    )
 
 
 def smart_coverage(data, event_analysis):

@@ -3,6 +3,7 @@ from openfix.core.helpers import clamp, format_bytes, format_prioritized_actions
 from openfix.core.scoring import disk_space_state
 from openfix.diagnostics.collector import smart_coverage
 from openfix.diagnostics.system import group_process_memory
+from openfix.diagnostics.storage_health import physical_disk_state
 
 
 def doctor_smart(data, event_analysis):
@@ -112,6 +113,39 @@ def doctor_smart(data, event_analysis):
             set_penalty("storage", 10)
             issues.append(f"{drive['device']} is getting low on free space.")
 
+    physical = data.get("physical_storage", {})
+    physical_problem = False
+    if physical.get("available"):
+        for disk in physical.get("disks", []):
+            state = physical_disk_state(disk)
+            if state == "unhealthy":
+                physical_problem = True
+                set_penalty("storage", max(config.PHYSICAL_DISK_UNHEALTHY_PENALTY, 35))
+                issues.append(
+                    f"Windows reports {disk.get('name', 'a physical disk')} as unhealthy or not operating normally."
+                )
+                action(0, "Back up important files before deeper storage troubleshooting.")
+                action(1, "Confirm the drive condition with the SSD/HDD manufacturer's diagnostic tool.")
+                candidate(
+                    0,
+                    "Windows reports a physical storage device as unhealthy.",
+                    "An explicit unhealthy physical-disk status has high priority because it may affect data reliability.",
+                    "storage",
+                )
+            elif state == "warning":
+                physical_problem = True
+                set_penalty("storage", max(config.PHYSICAL_DISK_WARNING_PENALTY, 18))
+                issues.append(
+                    f"Windows reports a warning/degraded state for {disk.get('name', 'a physical disk')}."
+                )
+                action(1, "Back up important files and confirm the drive condition with a dedicated diagnostic tool.")
+                candidate(
+                    1,
+                    "Windows reports a warning for a physical storage device.",
+                    "A storage warning deserves follow-up, but OpenFix does not treat it as proof that the drive has failed.",
+                    "storage",
+                )
+
     online = network.get("online")
     if network.get("connectivity_tested") and online is False:
         set_penalty("network", 30)
@@ -197,7 +231,8 @@ def doctor_smart(data, event_analysis):
         facts.append(f"Windows recorded {event_analysis['hardware_warnings']} corrected hardware warning(s).")
 
     if storage_event:
-        set_penalty("storage", 35 if low_storage else 25)
+        storage_penalty = 40 if physical_problem else (35 if low_storage else 25)
+        set_penalty("storage", storage_penalty)
         issues.append("Windows recorded important storage-related errors.")
         if low_storage:
             action(0, "Back up important files first because storage errors and low free space were detected together.")
@@ -245,6 +280,21 @@ def doctor_smart(data, event_analysis):
         set_penalty("apps", 8)
         issues.append("Application crashes were recorded.")
         action(4, "Identify which application crashed before reinstalling drivers or Windows.")
+
+    correlations = event_analysis.get("correlations") or []
+    if correlations:
+        for correlation in correlations[:3]:
+            facts.append(
+                f"Possible event relationship: {correlation['description']} "
+                f"({correlation['seconds_apart']} seconds apart; correlation is not proof of cause)."
+            )
+        strongest = correlations[0]
+        candidate(
+            2,
+            strongest["description"],
+            "Two relevant Windows events occurred close together in time. OpenFix treats this as a possible relationship, not a confirmed cause.",
+            strongest.get("route") or "events",
+        )
 
     if low_storage and cpu is not None and cpu < config.RESOURCE_NORMAL_CPU_MAX and ram is not None and ram < config.RESOURCE_NORMAL_RAM_MAX:
         action(2, "Storage space is currently a more likely concern than CPU or RAM usage.")

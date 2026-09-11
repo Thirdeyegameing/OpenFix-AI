@@ -2,8 +2,8 @@ import json
 import re
 import socket
 
+from openfix import config
 from openfix.core.helpers import safe_int
-
 from openfix.core.powershell import run_powershell
 
 
@@ -41,7 +41,6 @@ def get_network_snapshot():
                 Name = $adapter.Name
                 InterfaceDescription = $adapter.InterfaceDescription
                 LinkSpeed = $adapter.LinkSpeed
-                MacAddress = $adapter.MacAddress
                 InterfaceIndex = $route.InterfaceIndex
                 Gateway = $route.NextHop
                 RouteMetric = [int]$route.RouteMetric
@@ -62,7 +61,7 @@ def get_network_snapshot():
         "name": "Not available",
         "description": "Not available",
         "link_speed": "Not available",
-        "mac": "Not available",
+        "mac": None,
         "interface_index": None,
         "gateway": "Not available",
         "dns_servers": [],
@@ -89,7 +88,7 @@ def get_network_snapshot():
                 "name": data.get("Name") or "Not available",
                 "description": data.get("InterfaceDescription") or "Not available",
                 "link_speed": data.get("LinkSpeed") or "Not available",
-                "mac": data.get("MacAddress") or "Not available",
+                "mac": None,
                 "interface_index": data.get("InterfaceIndex"),
                 "gateway": data.get("Gateway") or "Not available",
                 "dns_servers": [str(item) for item in dns if item],
@@ -105,7 +104,7 @@ def get_network_snapshot():
 
 def test_dns():
     try:
-        socket.getaddrinfo("cloudflare.com", 443, type=socket.SOCK_STREAM)
+        socket.getaddrinfo(config.NETWORK_DNS_TEST_HOST, 443, type=socket.SOCK_STREAM)
         return {"tested": True, "ok": True}
     except socket.gaierror:
         return {"tested": True, "ok": False}
@@ -115,7 +114,7 @@ def test_dns():
 
 def test_tcp_connectivity(timeout=3.0):
     # Plain TCP connectivity check; no HTTP/API data is sent.
-    targets = [("1.1.1.1", 443), ("8.8.8.8", 53)]
+    targets = config.NETWORK_TCP_TARGETS
     attempted = False
     for host, port in targets:
         try:
@@ -130,33 +129,34 @@ def test_tcp_connectivity(timeout=3.0):
 
 
 def test_ping():
+    target = config.NETWORK_PING_TARGET
     result = run_powershell(
-        r"""
-        try {
+        rf"""
+        try {{
             $sent = 4
-            $replies = @(Test-Connection -ComputerName '1.1.1.1' -Count $sent -ErrorAction SilentlyContinue)
+            $replies = @(Test-Connection -ComputerName '{target}' -Count $sent -ErrorAction SilentlyContinue)
             $times = @()
-            foreach ($reply in $replies) {
+            foreach ($reply in $replies) {{
                 $value = $null
-                if ($null -ne $reply.ResponseTime) { $value = [double]$reply.ResponseTime }
-                elseif ($null -ne $reply.Latency) { $value = [double]$reply.Latency }
-                if ($null -ne $value) { $times += $value }
-            }
+                if ($null -ne $reply.ResponseTime) {{ $value = [double]$reply.ResponseTime }}
+                elseif ($null -ne $reply.Latency) {{ $value = [double]$reply.Latency }}
+                if ($null -ne $value) {{ $times += $value }}
+            }}
             $avg = $null
-            if ($times.Count -gt 0) { $avg = [math]::Round((($times | Measure-Object -Average).Average)) }
+            if ($times.Count -gt 0) {{ $avg = [math]::Round((($times | Measure-Object -Average).Average)) }}
             $received = $replies.Count
             $loss = [math]::Round((($sent - $received) / $sent) * 100)
-            [PSCustomObject]@{
+            [PSCustomObject]@{{
                 Success = $true
                 Sent = $sent
                 Received = $received
                 AverageMs = $avg
                 PacketLoss = $loss
-            } | ConvertTo-Json -Compress
-        }
-        catch {
-            [PSCustomObject]@{ Success=$false } | ConvertTo-Json -Compress
-        }
+            }} | ConvertTo-Json -Compress
+        }}
+        catch {{
+            [PSCustomObject]@{{ Success=$false }} | ConvertTo-Json -Compress
+        }}
         """,
         timeout=14,
     )
@@ -210,7 +210,7 @@ def scan_network():
             "name": snapshot["name"],
             "description": snapshot["description"],
             "link_speed": snapshot["link_speed"],
-            "mac": snapshot["mac"],
+            "mac": None,
             "interface_index": snapshot["interface_index"],
             "effective_metric": snapshot["effective_metric"],
         },
@@ -240,7 +240,7 @@ def get_active_adapter():
         "name": snapshot["name"],
         "description": snapshot["description"],
         "link_speed": snapshot["link_speed"],
-        "mac": snapshot["mac"],
+        "mac": None,
         "interface_index": snapshot["interface_index"],
         "effective_metric": snapshot["effective_metric"],
     }
@@ -257,7 +257,7 @@ def get_dns_servers():
 def parse_ping_output(output):
     """Legacy localized ping parser retained as a fallback/test utility.
 
-    dev12 uses structured PowerShell ping data for normal scans, so UI accuracy
+    v1.0 uses structured PowerShell ping data for normal scans, so UI accuracy
     no longer depends on the Windows display language.
     """
     parsed = {"ping": None, "packet_loss": None}

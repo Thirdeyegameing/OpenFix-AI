@@ -11,6 +11,7 @@ from openfix.config import (
 from openfix.core.helpers import format_bytes
 from openfix.core.scoring import disk_space_state
 from openfix.diagnostics.system import group_process_memory
+from openfix.diagnostics.storage_health import physical_disk_state
 from openfix.core.scanner import ScanWorker
 from openfix.ui.theme import STYLESHEET
 from openfix.ui.widgets import (
@@ -75,7 +76,7 @@ class OpenFixWindow(QMainWindow):
         )
         self.storage_page = self.build_doctor_page(
             "Storage Doctor",
-            "Checks free space across your drives.",
+            "Checks free space and read-only Windows physical-disk health when available.",
             "storage",
         )
         self.event_page = self.build_doctor_page(
@@ -167,7 +168,7 @@ class OpenFixWindow(QMainWindow):
         privacy_layout.setSpacing(5)
         badge = QLabel("●  LOCAL + READ ONLY")
         badge.setObjectName("LocalBadge")
-        privacy = QLabel("No Cloud AI\nNo external AI API\nNo automatic system changes")
+        privacy = QLabel("No Cloud AI\nNo external AI API\nNo telemetry or scan uploads\nNo automatic system changes")
         privacy.setObjectName("PrivacyText")
         privacy.setWordWrap(True)
         privacy_layout.addWidget(badge)
@@ -200,7 +201,7 @@ class OpenFixWindow(QMainWindow):
         layout.addWidget(title)
         layout.addStretch()
 
-        badge = QLabel("●  LOCAL ENGINE")
+        badge = QLabel("●  STABLE • LOCAL ENGINE")
         badge.setObjectName("FactsBadge")
         guide = QPushButton("Guide")
         guide.setObjectName("SecondaryButton")
@@ -302,7 +303,7 @@ class OpenFixWindow(QMainWindow):
 
         self.cpu_card = StatCard("CPU", "C")
         self.ram_card = StatCard("Memory", "M")
-        self.storage_card = StatCard("Windows Drive", "D")
+        self.storage_card = StatCard("Storage", "D")
         self.network_card = StatCard("Internet", "N")
         self.gpu_card = StatCard("Graphics", "G")
         self.events_card = StatCard("Windows Events", "E")
@@ -522,18 +523,39 @@ class OpenFixWindow(QMainWindow):
             self.ram_card.set_status(f"{ram:.0f}%", "Very high usage", "HIGH", "danger", ram)
 
         drive = data["system_drive"]
-        if not drive:
-            self.storage_card.set_status("N/A", "Drive information unavailable", "UNAVAILABLE", "unavailable", None)
-        else:
+        physical = data.get("physical_storage", {})
+        physical_states = [physical_disk_state(item) for item in physical.get("disks", [])]
+        physical_unhealthy = "unhealthy" in physical_states
+        physical_warning = "warning" in physical_states
+
+        if not drive and not physical.get("available"):
+            self.storage_card.set_status("N/A", "Storage information unavailable", "UNAVAILABLE", "unavailable", None)
+        elif drive:
             disk_state, free_gb, free_percent = disk_space_state(drive)
             subtitle = f"{drive['device']} free space • {free_percent:.0f}% free"
-            if disk_state == "critical":
+            if physical_unhealthy:
+                badge, state = "IMPORTANT", "danger"
+                subtitle = f"Physical disk warning • {free_percent:.0f}% free on {drive['device']}"
+            elif physical_warning:
+                badge, state = "CHECK", "warning"
+                subtitle = f"Physical disk warning • {free_percent:.0f}% free on {drive['device']}"
+            elif disk_state == "critical":
                 badge, state = "LOW", "danger"
             elif disk_state == "low":
                 badge, state = "CHECK", "minor"
             else:
                 badge, state = "GOOD", "good"
             self.storage_card.set_status(f"{free_gb:.0f} GB", subtitle, badge, state, free_percent)
+        elif physical_unhealthy or physical_warning:
+            self.storage_card.set_status(
+                "Check",
+                "Windows reports a physical disk warning",
+                "IMPORTANT" if physical_unhealthy else "CHECK",
+                "danger" if physical_unhealthy else "warning",
+                None,
+            )
+        else:
+            self.storage_card.set_status("N/A", "Windows drive information unavailable", "UNAVAILABLE", "unavailable", None)
 
         network = data["network"]
         online = network.get("online")
@@ -657,8 +679,9 @@ class OpenFixWindow(QMainWindow):
             "Important information about how OpenFix currently works.",
             [
                 ("Local analysis", "No Cloud AI and no external AI API are used. Smart Doctor analysis uses built-in local rules."),
-                ("Read-only diagnostics", "OpenFix does not automatically edit the Registry, remove drivers or disable Windows services."),
-                ("Normal connectivity checks", "Internet Doctor uses standard tests such as ping and DNS lookup. These are not AI services."),
+                ("Read-only diagnostics", "OpenFix does not automatically edit the Registry, remove drivers, disable Windows services or run repair commands."),
+                ("No telemetry", "OpenFix does not upload scan results or diagnostic history. Logs stay local and redact common local identifiers before being written."),
+                ("Normal connectivity checks", "Internet Doctor uses standard DNS, TCP connectivity and ping tests. These are diagnostic checks, not AI services or telemetry."),
                 ("Scores are estimates", "A low score does not prove hardware is broken. A score of 100 also cannot guarantee that every component is healthy."),
                 ("Before major changes", "Important hardware problems should be confirmed with dedicated diagnostic tools."),
             ],

@@ -1,0 +1,17 @@
+OpenFix AI v1.0.0 upgrade
+==========================
+
+If you already have the OpenFix-AI Git repository:
+
+1. Back up the current project folder if you want an easy rollback.
+2. Extract this v1.0.0 package.
+3. Copy the package contents into the existing OpenFix-AI repository folder.
+4. Replace matching files when Windows asks.
+5. DO NOT delete the repository's .git folder.
+6. Install/update dependencies if needed:
+      py -m pip install -r requirements.txt
+7. Run:
+      py main.py
+8. Test Full System Scan and each Doctor before committing/pushing the release.
+
+v1.0.0 remains local, read-only, and does not require Administrator elevation by design.

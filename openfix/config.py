@@ -1,5 +1,6 @@
 APP_NAME = "OpenFix AI"
-APP_VERSION = "0.5.2-dev12"
+APP_VERSION = "1.0.0"
+RELEASE_CHANNEL = "stable"
 
 # Shared diagnostic thresholds. These are estimates, not hardware verdicts.
 CPU_HIGH = 85
@@ -39,7 +40,18 @@ DATA_DISK_LOW_PERCENT_GB_CAP = 25
 
 EVENT_LOOKBACK_HOURS = 24
 EVENT_MAX_EVENTS = 80
+EVENT_CORRELATION_WINDOW_MINUTES = 5
+
+# Physical disk health is read-only and intentionally conservative. OpenFix
+# only penalizes explicit Warning/Unhealthy/Degraded states reported by Windows.
+PHYSICAL_DISK_WARNING_PENALTY = 18
+PHYSICAL_DISK_UNHEALTHY_PENALTY = 35
 
 # Logging
 LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
+
+# Network checks are fixed internal targets; they are not telemetry endpoints.
+NETWORK_DNS_TEST_HOST = "cloudflare.com"
+NETWORK_TCP_TARGETS = (("1.1.1.1", 443), ("8.8.8.8", 53))
+NETWORK_PING_TARGET = "1.1.1.1"
