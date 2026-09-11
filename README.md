@@ -166,7 +166,7 @@ OpenFix AI will scan your system and display the results.
 - [x] v0.1 - Basic CPU, RAM, disk and internet diagnostics
 - [x] v0.2 - GPU, network details, multiple drives, process monitoring and issue detection
 - [x] v0.3 - Doctor Mode
-- [ ] v0.4 - Windows Event Log diagnostics
+- [x] v0.4 - Windows Event Log diagnostics
 - [ ] v0.5 - AI Doctor
 - [ ] v0.6 - Diagnostic report export
 - [ ] v0.7 - Safe repair tools
