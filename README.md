@@ -10,7 +10,7 @@ The goal is simple:
 
 ## Current Version
 
-**OpenFix AI v0.2**
+**OpenFix AI v0.4.3.1**
 
 OpenFix AI is currently in early development.
 
