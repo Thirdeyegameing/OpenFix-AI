@@ -83,25 +83,73 @@ OpenFix AI currently operates in **read-only diagnostic mode** and does not auto
 
 ## Features
 
-OpenFix AI v0.2 can currently check:
+OpenFix AI v0.5.2-dev7 currently includes:
 
-- CPU usage
-- RAM usage
+### Core Diagnostics
+- CPU usage monitoring
+- RAM usage monitoring
 - GPU information
-- GPU driver version
-- GPU temperature and usage on supported NVIDIA systems
+- GPU driver version detection
+- GPU temperature support on compatible systems
 - Storage usage for multiple drives
-- Active network adapter
-- Ethernet / Wi-Fi link speed
-- Default gateway
-- DNS servers
-- Internet connectivity
-- Ping
-- Packet loss
-- Top 5 applications using the most RAM
-- Basic PC health score
-- Detected issues
-- Basic recommendations
+- Windows drive free space checks
+- Active network adapter detection
+- Ethernet / Wi-Fi link information
+- Default gateway detection
+- DNS detection
+- Internet connectivity check
+- Ping / response time check
+- Packet loss check
+- Windows Event Log diagnostics
+
+### Doctor Modes
+- Internet Doctor
+- Gaming Doctor
+- Slow PC Doctor
+- Storage Doctor
+- Windows Event Doctor
+- Full System Scan
+
+### Smart Analysis
+- Local Smart Doctor analysis
+- Measured facts display
+- Estimated analysis
+- Possible problem detection
+- Prioritized recommendations
+- Scan coverage summary
+- Partial scan awareness
+- Last scan tracking
+
+### Dashboard and Monitoring
+- System Health dashboard
+- CPU status card
+- RAM status card
+- Internet status card
+- Graphics status card
+- Windows drive status card
+- Windows event status card
+- Top RAM usage monitoring
+- System information panel
+- PC uptime display
+- Installed RAM display
+- Windows version display
+- Network adapter display
+
+### Usability
+- Expandable / collapsible dashboard sections
+- Quick Guide window
+- Simple Terms window
+- Safety & Privacy window
+- Cleaner modern UI
+- Read-only diagnostic mode
+
+### Safety
+- No Cloud AI
+- No external API integration
+- No automatic Registry edits
+- No automatic driver removal
+- No automatic Windows service changes
+- No automatic system changes
 
 ---
 
